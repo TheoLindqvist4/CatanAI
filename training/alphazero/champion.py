@@ -255,10 +255,24 @@ def describe():
 # --------------------------------------------------------------------------- #
 
 def promote(candidate_path, games=PROMOTION_GAMES, seed=41_000,
-            simulations=CHAMPION_SIMULATIONS, force=False, reason=None, log=print):
+            simulations=CHAMPION_SIMULATIONS, force=False, reason=None,
+            baseline_games=None, ppo_games=None, log=print):
     """Install ``candidate_path`` as the AlphaZero champion if it earns the place.
 
     Args:
+        games: the head-to-head rung against the reigning champion. This is the one that
+            decides, so it is the one that should stay large.
+        baseline_games: games against the fixed heuristic. Defaults to ``games``.
+
+            **This rung is not "can it beat the heuristic".** Every champion since the
+            first has won it comfortably. It is the *anti-overfitting tripwire*: self-play
+            is non-transitive, so a candidate can beat the champion by learning its habits
+            while getting worse at the game, and the only thing that notices is a fixed
+            external opponent. See :data:`MAX_BASELINE_REGRESSION`. Lowering it trades
+            statistical power for wall-clock; setting it to 0 removes the safeguard, which
+            is a real choice and not a free one — especially in a chain of runs where each
+            stage is judged only against its own predecessor.
+        ppo_games: games against the PPO champion, recorded but never a veto. 0 skips it.
         force: install without requiring the head-to-head rung. The record then carries
             ``"forced": true`` and ``"forced_reason"``, because a promotion that did not pass
             the gate must never be mistaken for one that did — and a year later the only
@@ -284,23 +298,34 @@ def promote(candidate_path, games=PROMOTION_GAMES, seed=41_000,
     # minutes *per rung*, which is how a gate stops being run — see
     # :mod:`training.alphazero.arena`.
     me = {"kind": "mcts", "path": str(candidate_path), "simulations": simulations}
+    baseline_games = games if baseline_games is None else int(baseline_games)
+    ppo_games = games if ppo_games is None else int(ppo_games)
 
     log(f"candidate: {candidate_path} at {simulations} simulations/move")
-    log(f"{games} games against the heuristic:")
-    against_baseline = compete(me, {"kind": "heuristic", "noise": 0}, games=games, seed=seed)
-    log("  " + format_result("heuristic", against_baseline))
+    if baseline_games:
+        log(f"{baseline_games} games against the heuristic:")
+        against_baseline = compete(me, {"kind": "heuristic", "noise": 0},
+                                   games=baseline_games, seed=seed)
+        log("  " + format_result("heuristic", against_baseline))
+    else:
+        # Explicitly switched off. The regression check below cannot run, and the record
+        # must not carry a stale `beat_heuristic` from the previous champion as though it
+        # were measured for this one.
+        log("skipping the heuristic rung — the overfitting tripwire is disabled")
+        against_baseline = None
 
     against_ppo = None
-    if load_previous_technique() is not None:
-        log(f"{games} games against the PPO champion:")
-        against_ppo = compete(me, {"kind": "ppo_champion"}, games=games, seed=seed + 1)
+    if ppo_games and load_previous_technique() is not None:
+        log(f"{ppo_games} games against the PPO champion:")
+        against_ppo = compete(me, {"kind": "ppo_champion"}, games=ppo_games, seed=seed + 1)
         log("  " + format_result("ppo", against_ppo))
 
     results = {
-        "beat_heuristic": against_baseline["win_rate"],
+        "beat_heuristic": None if against_baseline is None else against_baseline["win_rate"],
         "beat_ppo_champion": None if against_ppo is None else against_ppo["win_rate"],
         "beat_champion": None,
         "games": games,
+        "baseline_games": baseline_games,
         "simulations": simulations,
     }
 
@@ -324,6 +349,10 @@ def promote(candidate_path, games=PROMOTION_GAMES, seed=41_000,
         # The hole in the older gate, closed. A first candidate is still measured; it just
         # has nothing of its own lineage to be measured against, so the fixed baseline is
         # the whole test rather than a side condition.
+        if against_baseline is None:
+            return False, ("a first AlphaZero candidate has nothing of its own lineage to "
+                           "be measured against, so the heuristic rung IS the gate — it "
+                           "cannot be switched off for this promotion")
         if not better(against_baseline):
             low, high = against_baseline["ci"]
             return False, (
@@ -352,7 +381,7 @@ def promote(candidate_path, games=PROMOTION_GAMES, seed=41_000,
     # And it must not have got there by learning the champion's habits. Self-play is
     # non-transitive; without this a policy can climb the ladder while getting worse.
     previous = record().get("beat_heuristic")
-    if previous is not None:
+    if previous is not None and against_baseline is not None:
         drop = previous - against_baseline["win_rate"]
         if drop > MAX_BASELINE_REGRESSION:
             return False, (f"beat the champion but fell {100 * drop:.1f} points against the "
@@ -421,7 +450,14 @@ def main(argv=None):
 
     run = sub.add_parser("promote", help="install a candidate if it is measurably better")
     run.add_argument("candidate")
-    run.add_argument("--games", type=int, default=PROMOTION_GAMES)
+    run.add_argument("--games", type=int, default=PROMOTION_GAMES,
+                     help="the head-to-head rung, which is the one that decides")
+    run.add_argument("--baseline-games", type=int, default=None, dest="baseline_games",
+                     help="games against the fixed heuristic; defaults to --games. This is "
+                          "the overfitting tripwire, not a strength check — 0 disables it")
+    run.add_argument("--ppo-games", type=int, default=None, dest="ppo_games",
+                     help="games against the PPO champion, recorded but never a veto; "
+                          "0 skips it")
     run.add_argument("--seed", type=int, default=41_000)
     run.add_argument("--simulations", type=int, default=CHAMPION_SIMULATIONS)
     run.add_argument("--force", action="store_true",
@@ -465,7 +501,9 @@ def _promote_command(arguments):
     torch.set_num_threads(4)
     promoted, reason = promote(arguments.candidate, games=arguments.games,
                                seed=arguments.seed, simulations=arguments.simulations,
-                               force=arguments.force, reason=arguments.reason)
+                               force=arguments.force, reason=arguments.reason,
+                               baseline_games=arguments.baseline_games,
+                               ppo_games=arguments.ppo_games)
     print(("PROMOTED — " if promoted else "kept the current champion — ") + reason)
     print(describe())
     return 0 if promoted else 1
