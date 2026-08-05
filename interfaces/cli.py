@@ -399,6 +399,16 @@ def main(argv=None):
     if human_seats and args.games > 1:
         parser.error("a human plays one game at a time")
 
+    # Say *which* champion is playing. "alphazero" names a file that is overwritten every
+    # promotion, so a result recorded against it is ambiguous a week later; the name is not.
+    if "alphazero" in args.agents and not args.quiet:
+        try:
+            from training.alphazero import champion as _named
+            print(f"alphazero: champion {_named.name()} "
+                  f"at {_named.CHAMPION_SIMULATIONS} simulations/move")
+        except ImportError:
+            pass
+
     tally = {seat: 0 for seat in range(1, len(args.agents) + 1)}
     tally["truncated"] = 0
 

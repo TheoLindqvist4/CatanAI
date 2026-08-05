@@ -1,4 +1,7 @@
 {
+  "name": "gen4-ashen-wheat",
+  "generation": 4,
+  "fingerprint": "871a227b21dfcbe1",
   "promoted_at": "2026-08-05 21:23",
   "lineage": "alphazero",
   "source": "checkpoints/az_v2/latest.pt",

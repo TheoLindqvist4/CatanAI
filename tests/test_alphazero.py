@@ -783,6 +783,43 @@ def test_champion_load_returns_none_for_a_missing_file(tmp_path):
     assert az.load(tmp_path / "nothing.pt") is None
 
 
+def test_champion_name_is_derived_from_the_weights():
+    """The same weights must always produce the same name, whatever order they arrive in.
+
+    The point of deriving the name from a content hash rather than allocating a counter is
+    that a checkpoint keeps its identity when it is copied, re-promoted, or listed by a
+    tool that happened to build its state dict differently.
+    """
+    from training.alphazero import champion as az
+
+    weights = {"b": torch.arange(6).float().reshape(2, 3),
+               "a": torch.zeros(4)}
+    reordered = {key: weights[key] for key in reversed(list(weights))}
+    assert az.fingerprint(weights) == az.fingerprint(reordered)
+    assert az.champion_name(3, az.fingerprint(weights)).startswith("gen3-")
+
+    # and a different network must not collide onto the same name
+    changed = dict(weights)
+    changed["a"] = torch.ones(4)
+    assert az.fingerprint(changed) != az.fingerprint(weights)
+
+
+def test_champion_name_survives_a_console_that_cannot_encode_it():
+    """The name reaches a cp1252 Windows console intact.
+
+    ``train.py`` already records why this matters: a banner that raises
+    UnicodeEncodeError is worse than a plain one. The codename words are ASCII, and this
+    pins that rather than trusting it.
+    """
+    from training.alphazero import champion as az
+
+    for adjective in az._ADJECTIVES:
+        adjective.encode("cp1252")
+    for noun in az._NOUNS:
+        noun.encode("cp1252")
+    az.champion_name(9, "0" * 64).encode("cp1252")
+
+
 def test_first_promotion_is_gated(tmp_path, monkeypatch):
     """The hole in the older gate must not be reproduced here.
 

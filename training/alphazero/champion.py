@@ -24,6 +24,7 @@ record says in so many words that it was the first.
 
 import argparse
 import datetime
+import hashlib
 import json
 import pathlib
 
@@ -49,6 +50,73 @@ PPO_CHAMPION = MODELS / "champion.pt"
 #: brings a rung back to a couple of minutes, so the number is set by what makes a good gate
 #: rather than by what fits in an afternoon.
 PROMOTION_GAMES = 400
+
+# --------------------------------------------------------------------------- #
+# Naming a champion                                                           #
+# --------------------------------------------------------------------------- #
+#
+# Every promotion overwrites ``models/champion_az.pt``, so "the champion" means a different
+# player every few hours and a sentence like "the champion scores 74.7%" rots the moment the
+# next one lands. A name fixes the reference.
+#
+# The name is **derived from the weights**, not allocated. Two consequences, both wanted:
+# the same weights always produce the same name, so a checkpoint copied to another machine
+# or promoted twice keeps its identity; and two different networks cannot collide onto one
+# name by accident, because the collision would require a SHA-256 prefix collision rather
+# than a counter being reset. The generation number is what makes it *ordered*; the codename
+# is what makes it memorable.
+
+#: Words the codename is built from. 32 x 32 is 1,024 pairs, which is far more than this
+#: project will ever promote, and the generation prefix disambiguates regardless.
+_ADJECTIVES = (
+    "amber", "ashen", "bold", "bronze", "clever", "coastal", "copper", "crimson",
+    "dusty", "eager", "fallow", "fertile", "gilded", "granite", "hardy", "hollow",
+    "inland", "iron", "keen", "lucky", "northern", "patient", "quiet", "rugged",
+    "sable", "shrewd", "steady", "stony", "thrifty", "verdant", "wary", "windward",
+)
+_NOUNS = (
+    "anchor", "badger", "beacon", "cairn", "cedar", "clay", "crane", "delta",
+    "ember", "falcon", "ferry", "forge", "granary", "harbour", "heron", "keep",
+    "lantern", "marten", "meadow", "mill", "orchard", "otter", "quarry", "raven",
+    "ridge", "sable", "sheaf", "spire", "thicket", "vale", "warren", "wheat",
+)
+
+
+def fingerprint(weights):
+    """A stable SHA-256 over a state dict's keys and raw bytes.
+
+    Sorted by key so the digest does not depend on insertion order, and taken over the
+    tensor bytes rather than a repr so it does not depend on formatting. This is the
+    identity of a set of weights.
+    """
+    digest = hashlib.sha256()
+    for key in sorted(weights):
+        tensor = weights[key]
+        digest.update(key.encode("utf-8"))
+        digest.update(str(tuple(tensor.shape)).encode("utf-8"))
+        digest.update(tensor.detach().cpu().contiguous().numpy().tobytes())
+    return digest.hexdigest()
+
+
+def codename(digest):
+    """``adjective-noun`` from a hex digest. Deterministic, and stable forever."""
+    value = int(digest[:16], 16)
+    return f"{_ADJECTIVES[value % len(_ADJECTIVES)]}-{_NOUNS[(value // len(_ADJECTIVES)) % len(_NOUNS)]}"
+
+
+def champion_name(generation, digest):
+    """The full name: ``gen5-amber-otter``.
+
+    The generation orders them and the codename identifies them. Either alone is not
+    enough — a bare counter says nothing about *which* weights, and a bare codename does
+    not say which came first.
+    """
+    return f"gen{generation}-{codename(digest)}"
+
+
+def name(default="unnamed"):
+    """The reigning champion's name, from the record. For the interfaces to display."""
+    return record().get("name", default)
 
 #: Simulations the champion is measured at **and played at**. A win rate is a property of the
 #: ``(weights, simulations)`` pair, so measuring at one number and playing at another would
@@ -314,7 +382,16 @@ def _install(candidate_path, results):
     staging.replace(CHAMPION)
 
     previous = record()
+    history = (previous.get("history", []) + [
+        {k: v for k, v in previous.items() if k != "history"}
+    ])[-10:] if previous else []
+
+    digest = fingerprint(source["weights"])
+    generation = len(history) + 1
     entry = {
+        "name": champion_name(generation, digest),
+        "generation": generation,
+        "fingerprint": digest[:16],
         "promoted_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
         "lineage": "alphazero",
         "source": str(candidate_path),
@@ -322,9 +399,7 @@ def _install(candidate_path, results):
         "actions": action_space.NUM_ACTIONS,
         **results,
     }
-    entry["history"] = (previous.get("history", []) + [
-        {k: v for k, v in previous.items() if k != "history"}
-    ])[-10:] if previous else []
+    entry["history"] = history
     RECORD.write_text(json.dumps(entry, indent=2), encoding="utf-8")
 
 
@@ -341,6 +416,9 @@ def main(argv=None):
     show.set_defaults(func=lambda a: print(describe()) or
                       print(json.dumps(record(), indent=2) if record() else ""))
 
+    named = sub.add_parser("name", help="the reigning champion's name, and the lineage")
+    named.set_defaults(func=lambda a: _name_command())
+
     run = sub.add_parser("promote", help="install a candidate if it is measurably better")
     run.add_argument("candidate")
     run.add_argument("--games", type=int, default=PROMOTION_GAMES)
@@ -355,6 +433,30 @@ def main(argv=None):
 
     arguments = parser.parse_args(argv)
     return arguments.func(arguments)
+
+
+def _name_command():
+    """The lineage, newest first. Unnamed entries predate naming and say so."""
+    current = record()
+    if not current:
+        print("no champion")
+        return 1
+    rows = [current] + list(reversed(current.get("history", [])))
+    total = len(rows)
+    print(f"{'name':<24} {'promoted':<18} {'vs champion':>12} {'vs heuristic':>13}")
+    for offset, entry in enumerate(rows):
+        generation = entry.get("generation", total - offset)
+        label = entry.get("name") or f"gen{generation}-(unnamed)"
+        beat = entry.get("beat_champion")
+        against = entry.get("beat_heuristic")
+        print(f"{label:<24} {entry.get('promoted_at', '?'):<18} "
+              # ASCII on purpose: this prints to a Windows console whose default cp1252
+              # codec cannot encode an em dash, and a listing that raises is worse than a
+              # plain one. The same reason train.py's startup banner avoids them.
+              f"{('-' if beat is None else f'{100 * beat:.1f}%'):>12} "
+              f"{('-' if against is None else f'{100 * against:.1f}%'):>13}"
+              + ("   (forced)" if entry.get("forced") else ""))
+    return 0
 
 
 def _promote_command(arguments):

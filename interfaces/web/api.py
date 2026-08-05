@@ -143,6 +143,28 @@ OPPONENT_LABELS = {
 }
 
 
+def _name_the_champion():
+    """Put the champion's name in its label, so a player can tell which one they beat.
+
+    Read once, here, rather than per request: the weights are loaded at import, and a label
+    that refreshed independently would eventually name a champion the server is not actually
+    playing. A promotion needs a restart to take effect, and this makes that visible instead
+    of confusing.
+    """
+    if "alphazero" not in OPPONENTS:
+        return
+    try:
+        from training.alphazero import champion as az
+    except ImportError:
+        return
+    named = az.name(default="")
+    if named:
+        OPPONENT_LABELS["alphazero"] = f"AlphaZero {named} (searches)"
+
+
+_name_the_champion()
+
+
 def opponents():
     """The selectable opponents, as the client should list them."""
     return [
