@@ -28,7 +28,7 @@ initial audit, and the reasoning behind each decision taken — see **[`docs/`](
 | **9** | AlphaZero: determinized search, self-play, a second champion | ✅ **done** — six champions so far |
 | **10** | The opening: a search wide enough to see it, a gate with one rung | ✅ **done** |
 
-935 tests, and they are no longer quick. A full run takes **about six minutes** on this
+937 tests, and they are no longer quick. A full run takes **about six minutes** on this
 machine (374.8 s), and `python -m pytest -m "not slow"` deselects 35 and takes about six
 minutes too (353.6 s) — deselecting the slow marker buys back barely 20 seconds, because the
 cost is not the fuzzing. It is the web tests playing whole games over HTTP, and those are not
@@ -675,9 +675,10 @@ playing at 32 simulations when the latency budget allowed 64. Each has a record.
       spots — the breadth is in the value estimates. And **a floor of 8 degenerates silently**
       at this budget: 8 x 54 = 432 forced visits against the 399 available — 400 simulations
       leave 399 root visits, because the first expands the root and backs up along an empty
-      path — so the sweep never completes, the discretionary counts are all zero and the
-      fallback returns a near-uniform target. The shipped 4 needs 216 and is clear of it;
-      there is not room for much more.
+      path — so the sweep never completes and the discretionary counts are all zero. That used
+      to return a near-uniform target; it now returns the network's prior, which is a degraded
+      search rather than an arbitrary one. The shipped 4 needs 216 and is clear of it; there is
+      not room for much more.
 
       ⚠️ **None of this measures whether the agent plays better for it.** It measures what the
       search looks at. A strength claim is what the promotion gate is for.

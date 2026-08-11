@@ -179,7 +179,9 @@ with more threads, so a caller that does not set `torch.set_num_threads` pays ro
 
 ## Known limitations
 
-Both are real, both are open, and neither is fixed by this change.
+One is open. The other was found by this record's own measurement and fixed before the record
+was committed; it is kept here because the failure is worth knowing about and because the fix
+is a behaviour change that someone will one day want the reasoning for.
 
 ⚠️ **The Gumbel root silently overrides the floor.** In `_descend`, the root branch is
 `if self.gumbel: ... elif self.root_min_visits: ...`, so with `gumbel=True` the floor is never
@@ -189,21 +191,28 @@ consulted; `best_action` and `policy_target` also take their Gumbel paths and ne
 configurable, and a run that turns Gumbel on will lose the opening breadth without any signal
 that it did.
 
-⚠️ **`_discretionary_counts` falls back to the raw counts when the budget cannot cover the
-sweep, and the fallback degrades badly.** The line is
-`return discretionary if discretionary.sum() > 0 else counts`. At a floor of 8 with the shipped
-400-simulation setup budget, 8 x 54 = 432 forced visits against 399 available: the sweep stops
-at 50 spots, **the discretionary counts are identically zero on 40 of 40 boards**, and the
-fallback returns near-uniform raw counts. Verified on one board: `best_action(temperature=0)`
+✅ **Fixed: `_discretionary_counts` no longer falls back to the raw counts.** The line used to
+be `return discretionary if discretionary.sum() > 0 else counts`. At a floor of 8 with the
+shipped 400-simulation setup budget, 8 x 54 = 432 forced visits against 399 available: the sweep
+stops at 50 spots, **the discretionary counts are identically zero on 40 of 40 boards**, and the
+fallback returned near-uniform raw counts. Verified on one board: `best_action(temperature=0)`
 returned action 75 and `best_action(temperature=1)` returned 78 — an arbitrary pick among 49
 spots tied at 8 visits, because `argmax` over ties takes the first, which is the lowest-numbered
 vertex. That is exactly the failure `_discretionary_counts`'s own docstring says subtracting the
 floor prevents, arriving through the fallback instead.
 
-The shipped floor of 4 is well clear of it — 216 forced of 399 — but the margin is only
-400/54 = 7.4 visits per spot, so **any floor of 8 or more at this budget degenerates silently**.
-A floor that cannot complete its sweep within the budget should refuse or reduce itself rather
-than fall through; it does not.
+It is now `return np.maximum(counts - self.root_min_visits, 0.0)` with no fallback. Both callers
+already had a better branch for an all-zero array and it was being pre-empted: `best_action`
+returns `argmax(prior)` and `policy_target` returns the prior itself. So a search whose floor
+does not fit its budget now plays the network's best guess rather than the lowest vertex id.
+Pinned by `test_a_floor_too_big_for_the_budget_falls_back_to_the_prior`.
+
+This makes the degradation sane rather than absent, and the arithmetic that causes it is
+unchanged. The shipped floor of 4 is well clear — 216 forced of 399 — but the margin is only
+400/54 = 7.4 visits per spot, so **any floor of 8 or more at this budget still records no
+preference at all**; it simply records the prior now instead of an arbitrary spot. A floor that
+cannot complete its sweep within the budget should arguably refuse or reduce itself. It does
+not, and the docstring on `root_min_visits` says so.
 
 ## The figures in the code were wrong, and this record is the correction
 

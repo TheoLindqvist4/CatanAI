@@ -785,6 +785,38 @@ def test_champion_load_returns_none_for_a_missing_file(tmp_path):
     assert az.load(tmp_path / "nothing.pt") is None
 
 
+def test_describe_reports_the_rung_that_actually_decided(monkeypatch):
+    """``beat_champion`` is the gate, so it has to be the line.
+
+    Since ``baseline_games`` began defaulting to 0 the other two figures are ``null`` for
+    every chain promotion — gen5 and gen6 both — so a ``describe`` that read only those
+    printed a bare date for the reigning champion while the number that earned it sat in the
+    record unread.
+    """
+    from training.alphazero import champion as az
+
+    monkeypatch.setattr(az, "load", lambda *args, **kwargs: object())
+    monkeypatch.setattr(az, "record", lambda: {
+        "promoted_at": "2026-08-06 21:34",
+        "beat_champion": 0.5525,        # gen6-gilded-beacon, as promoted
+        "beat_heuristic": None,
+        "beat_ppo_champion": None,
+    })
+    line = az.describe()
+    assert "2026-08-06 21:34" in line
+    assert "55" in line and "champion it replaced" in line
+    assert "forced" not in line
+
+    # A forced promotion did not clear the gate, and its number must not read as though it
+    # had — the whole point of recording `forced` is that the two stay distinguishable.
+    monkeypatch.setattr(az, "record", lambda: {
+        "promoted_at": "2026-08-04 11:02",
+        "beat_champion": 0.518,
+        "forced": True,
+    })
+    assert "(forced)" in az.describe()
+
+
 def test_champion_name_is_derived_from_the_weights():
     """The same weights must always produce the same name, whatever order they arrive in.
 
@@ -1529,11 +1561,16 @@ def test_chain_logging_survives_a_console_that_cannot_encode_the_message():
 # The opening: a 54-wide root                                                                #
 # ---------------------------------------------------------------------------------------- #
 
-def _opening_search(budget, floor, seed=0):
+def _opening_search(budget, floor, seed=0, peak=0):
     """A search at the first settlement placement, driven by a deliberately peaked prior.
 
     Peaked because that is the case the floor exists for: PUCT following a confident prior
     concentrates, which is right at six legal moves and wrong at fifty-four.
+
+    ``peak`` is which legal action carries the mass, counted in the order the mask lists them
+    — which is the order the tree assigns slots, so ``peak=k`` puts the prior's best at slot
+    ``k``. It defaults to the first, and a test that needs to tell "the prior's choice" apart
+    from "the lowest-numbered slot" has to move it, because those are the same thing at 0.
     """
     env = CatanEnv(num_players=2, ruleset=RANKED_1V1, max_turns=400)
     _, info = env.reset(seed=seed)
@@ -1543,8 +1580,9 @@ def _opening_search(budget, floor, seed=0):
                     root_min_visits=floor)
     while (pending := search.request()) is not None:
         flags = np.frombuffer(bytes(pending[1]), dtype=np.uint8).astype(np.float64)
+        legal = np.flatnonzero(flags)
         probabilities = flags * 1e-3
-        probabilities[int(np.argmax(flags))] = 1.0
+        probabilities[legal[min(peak, len(legal) - 1)]] = 1.0
         search.deliver(probabilities / probabilities.sum(), 0.0)
     return search
 
@@ -1609,6 +1647,41 @@ def test_the_forced_sweep_does_not_reach_the_move_that_is_played():
         f"sampling reached {len(picks)} distinct spots of {len(search.root.actions)}; the "
         f"forced sweep is leaking into best_action"
     )
+
+
+def test_a_floor_too_big_for_the_budget_falls_back_to_the_prior():
+    """The degenerate case, and the one that used to be answered by the lowest vertex id.
+
+    A floor only works while the whole sweep fits inside the budget. At 54 spots and a floor
+    of 8 it does not — 432 forced visits against 199 available — so every spot the sweep
+    reached sits at exactly the floor and *nothing* is discretionary. ``_discretionary_counts``
+    used to hand back the raw counts here, which are near-uniform by construction, and
+    ``argmax`` over that tie is the first slot. Record 0028 measured the real thing at a floor
+    of 8 and 400 simulations: discretionary zero on 40 of 40 boards, and one board where
+    temperature 0 and temperature 1 returned two different arbitrary spots.
+
+    Returning zeros instead lets both callers reach the branch they already had for an empty
+    array, which is the network's prior. Still a degraded search — but ranked rather than
+    arbitrary.
+    """
+    search = _opening_search(budget=200, floor=8, peak=7)
+    assert len(search.root.actions) > 40, "this seed is not the wide root the test needs"
+
+    counts = search._discretionary_counts()
+    assert counts.sum() == 0, (
+        "this test is only meaningful when the sweep cannot complete; it did, so the budget "
+        "and floor no longer produce the degenerate case"
+    )
+
+    best = int(np.argmax(search.root.prior))
+    assert best != 0, (
+        "the prior's best spot is also the lowest-numbered one for this seed, so the test "
+        "cannot tell the fallback from the bug it replaced"
+    )
+    assert search.best_action(temperature=0.0) == int(search.root.actions[best])
+
+    _, target = search.policy_target()
+    assert np.allclose(target, search.root.prior), "the target should be the prior, unaltered"
 
 
 def test_root_min_visits_defaults_to_off():

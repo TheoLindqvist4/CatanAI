@@ -258,11 +258,21 @@ def record():
 
 
 def describe():
-    """One line about the champion, for a startup message or a CLI."""
+    """One line about the champion, for a startup message or a CLI.
+
+    ``beat_champion`` comes first because it is the only rung that decides — and since
+    ``baseline_games`` began defaulting to 0 it is often the only one measured at all, so a
+    version of this that reported the other two reported nothing but a date.
+    """
     if load() is None:
         return "no AlphaZero champion yet"
     info = record()
     parts = [f"AlphaZero champion from {info.get('promoted_at', 'an unknown date')}"]
+    if info.get("beat_champion") is not None:
+        beat = f"{100 * info['beat_champion']:.1f}% vs the champion it replaced"
+        # A forced promotion did not clear the gate, and the number must not read as if it
+        # had. The record carries the reason forever; this is the one-line version.
+        parts.append(f"{beat} (forced)" if info.get("forced") else beat)
     if info.get("beat_heuristic") is not None:
         parts.append(f"{100 * info['beat_heuristic']:.1f}% vs the heuristic")
     if info.get("beat_ppo_champion") is not None:

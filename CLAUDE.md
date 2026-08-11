@@ -312,9 +312,12 @@ buys is breadth in what the search *looks at*: after the subtraction the recorde
 still concentrated on a mean of 3.5 spots (median 3, range 1-9; 400 simulations, floor 4, 40
 boards), about the same handful plain PUCT would have examined. The margin is thinner than it
 looks. 400 simulations over 54 spots is 7.4 visits each, so a floor of 8 never finishes its
-sweep — 8 x 54 = 432 against the root's 399 visits — the discretionary counts come back
-identically zero on 40 boards out of 40, the fallback returns the raw near-uniform counts, and
-the failure the subtraction exists to prevent is back. Nothing raises.
+sweep — 8 x 54 = 432 against the root's 399 visits — and the discretionary counts come back
+identically zero on 40 boards out of 40. That case used to return the raw near-uniform counts,
+which put the failure the subtraction exists to prevent straight back; it now returns zeros, so
+both callers reach the branch they already had and play the network's prior instead of the
+lowest vertex id. Sane rather than arbitrary — but a floor that will not fit its budget still
+records no preference at all, and nothing raises.
 
 **The AlphaZero run is warm-started, and that is a choice, not a default.** At the simulation
 counts a CPU affords, MCTS is a modest improvement over its prior, so starting from a policy
@@ -421,7 +424,7 @@ Recorded so it is not re-attempted.
 | Where the time goes | `python -m benchmark.profiler selfplay` |
 | What the bot did in a real game | `python -m interfaces.web.recorder --margin 5` |
 
-Run the full suite before committing: `python -m pytest tests -q` — 934 passed, 1 skipped in
+Run the full suite before committing: `python -m pytest tests -q` — 936 passed, 1 skipped in
 375 s on a quiet machine, so budget **about six minutes**. `-m "not slow"` does not buy that
 back: it deselects 35 tests and still takes 354 s, because the cost is the web tests playing
 whole games rather than the fuzzing.

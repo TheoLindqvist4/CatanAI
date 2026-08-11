@@ -25,7 +25,7 @@ python -m interfaces.web        # then open http://127.0.0.1:8000
 | **Two trained opponents** | PPO self-play, and AlphaZero self-play with search. The AlphaZero lineage is six champions deep; the reigning one took the place at **55.25%** over 400 games against the one before it |
 | **Search that cannot cheat** | MCTS over a resampled information set — hidden cards are redrawn from public facts before the tree is built |
 | **The machinery to improve it** | 2,503-float observation, 325 discrete actions, parallel self-play, a promotion gate per lineage |
-| **935 tests** | Including leak detectors that prove no agent — and no search — can see hidden information |
+| **937 tests** | Including leak detectors that prove no agent — and no search — can see hidden information |
 
 ## Quick start
 
@@ -354,5 +354,5 @@ notes, and [`docs/`](docs/) for the decision records.
 ## Tests
 
 ```sh
-python -m pytest tests -q       # 935 tests, about six minutes
+python -m pytest tests -q       # 937 tests, about six minutes
 ```

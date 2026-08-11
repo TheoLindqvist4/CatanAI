@@ -246,8 +246,11 @@ class Search:
             4 x 54 = 216 of the root's 399 visits leaves room; 8 x 54 = 432 does not, and at
             8 the sweep stops at 50 spots with the discretionary counts identically zero on
             40 of 40 boards. The margin at 400 simulations is 400/54 = 7.4 visits per spot,
-            so any floor of 8 or more degenerates silently. See
-            :meth:`_discretionary_counts` for what that degeneration looks like.
+            so any floor of 8 or more spends the whole budget measuring and records no
+            preference at all. :meth:`_discretionary_counts` makes that case fall back to the
+            network's prior rather than to the lowest-numbered slot, which is the difference
+            between a degraded search and an arbitrary one — but it is still degraded, and
+            the floor is still yours to keep inside the budget.
 
             Breadth is a property of the ``(weights, settings)`` pair — a flatter prior
             explores wider — so every number above belongs to gen6-gilded-beacon and to
@@ -680,27 +683,30 @@ class Search:
         at, not in what it records — worth saying plainly, because "54 of 54 spots" reads as
         though the target itself became broad.
 
-        ⚠️ **The ``else counts`` fallback is wrong, and is documented rather than changed.**
-        It returns the raw counts when nothing is discretionary, and in that case the raw
-        counts are near-uniform by construction: every spot the sweep reached sits at exactly
-        the floor. ``best_action`` then takes the ``argmax`` of a tie, which is the
-        lowest-numbered slot, and ``policy_target`` records a flat label. Both callers
-        already have a better branch — a zero sum falls back to the network's *prior*, which
-        at least ranks the spots — and this fallback pre-empts it. Measured at a floor of 8
-        and 400 simulations, where the sweep cannot complete: the discretionary sum is
-        identically zero on 40 of 40 boards, and on one of them ``best_action(0.0)`` returned
-        75 and ``best_action(1.0)`` returned 78, an arbitrary pick among 49 spots tied at 8
-        visits — exactly the failure the paragraph above says subtracting the floor prevents.
-        It did not fire once at the shipped floor of 4, where the sweep completes on every
-        board measured and leaves 183 visits over. Changing it changes what the agent plays,
-        so it is a known issue rather than a patch made in passing: see the limitations
-        section of ``docs/decisions/0028-the-opening-is-fifty-four-moves-wide.md``.
+        **A budget too small for the sweep returns zeros, deliberately.** There used to be an
+        ``else counts`` fallback here that handed back the raw counts when nothing was
+        discretionary. That was wrong, and measurably so. In exactly that case the raw counts
+        are near-uniform by construction — every spot the sweep reached sits at the floor —
+        so ``best_action`` took the ``argmax`` of a tie, which is the lowest-numbered slot,
+        and ``policy_target`` recorded a flat label. Both callers already have a better
+        branch: a zero sum falls back to the network's *prior*, which at least ranks the
+        spots. The fallback pre-empted it. Measured at a floor of 8 and 400 simulations,
+        where the sweep cannot complete, the discretionary sum was identically zero on 40 of
+        40 boards, and on one of them ``best_action(0.0)`` returned 75 while
+        ``best_action(1.0)`` returned 78 — an arbitrary pick among 49 spots tied at 8 visits,
+        exactly the failure the paragraph above says subtracting the floor prevents.
+
+        Returning zeros lets both callers reach their prior branch, so a search whose budget
+        cannot cover its floor now plays the network's best guess instead of the lowest
+        vertex id. It is a degraded search either way — the fix makes the degradation sane,
+        not absent, and :data:`Search.root_min_visits` still warns that a floor must fit
+        inside the budget. Pinned by
+        ``test_a_floor_too_big_for_the_budget_falls_back_to_the_prior``.
         """
         counts = np.asarray(self.root.child_n, dtype=np.float64)
         if not self.root_min_visits:
             return counts
-        discretionary = np.maximum(counts - self.root_min_visits, 0.0)
-        return discretionary if discretionary.sum() > 0 else counts
+        return np.maximum(counts - self.root_min_visits, 0.0)
 
     def _select_root_floor(self, node):
         """A root slot still short of the floor, or ``None`` once every slot has met it.
