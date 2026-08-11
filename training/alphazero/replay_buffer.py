@@ -1,8 +1,8 @@
 """Where self-play positions live between being generated and being learned from.
 
 The guide asks for two million positions and for sampling stratified by age. Two million is
-not affordable here and the reason is arithmetic rather than taste: an observation is 1,884
-floats, so two million of them is 15 GB in float32 on a machine that also has to hold twenty
+not affordable here and the reason is arithmetic rather than taste: an observation is 2,503
+floats, so two million of them is 20 GB in float32 on a machine that also has to hold twenty
 worker processes. Three things bring it into range.
 
 **Observations are stored as float16.** Halves the bill. The encoder emits counts, ratios and
@@ -36,7 +36,7 @@ from catan.topology import NUM_ROADS, NUM_VERTICES
 #: here can afford, so nothing with a visit is ever dropped.
 POLICY_TOP_K = 48
 
-#: Positions held by default. At 1,884 float16 observations that is about 850 MB.
+#: Positions held by default. At 2,503 float16 observations that is about 1.1 GB.
 DEFAULT_CAPACITY = 220_000
 
 #: Age bands a batch is drawn from in equal parts. The guide's 25/25/25/25.

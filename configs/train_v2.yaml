@@ -5,7 +5,8 @@
 # justified it. This is a different network shape and a different set of targets, so it gets
 # its own file rather than overwriting the history of the previous one.
 #
-# The diagnosis this run is answering, all measured on the reigning champion:
+# The diagnosis this run is answering, all measured on the champion reigning when it was
+# configured — not necessarily the one reigning now:
 #
 #   * The value head explains 14% of held-out outcome variance (MSE 0.83 against 0.97 for
 #     predicting nothing) while scoring 0.28 on the buffer it was fitted to. The board is
@@ -57,6 +58,20 @@ gumbel: false
 # game before.
 playout_cap_probability: 0.25
 playout_cap_fast: 24
+
+# --- the opening ------------------------------------------------------------------------ #
+# Setup is exempt from the cap above and always recorded: it was 4.6% of searchable decisions
+# and a quarter of those reached the buffer, so about one placement per game was trained on.
+# The floor is the part that matters. A settlement root is 54 spots wide and PUCT was tuned
+# for roots about six wide, so on its own it examines a handful of them and the agent chose
+# its opening from the few the prior already liked. With the floor the search visits every
+# legal spot, on 40 of 40 boards measured, and it is not paid for: 0.319 s a search against
+# 0.335 s without it, one torch thread, n=40. The breadth table — which settings were
+# measured, and why the recorded policy target does not become 54 wide just because the
+# search looked 54 wide — is in docs/decisions/0028-the-opening-is-fifty-four-moves-wide.md.
+# Quote it from there rather than copying a number into a sixth file.
+setup_simulations: 400
+setup_root_min_visits: 4
 
 # --- replay ------------------------------------------------------------------------- #
 replay_buffer_size: 180000

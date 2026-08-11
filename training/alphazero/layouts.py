@@ -10,10 +10,11 @@ self-describing forever. Checkpoints written before that existed are looked up i
 which must **never be edited retroactively**: an entry is a statement about a file that
 already exists on disk.
 
-Adding a block, or widening one, means appending a new entry keyed by the new
-:data:`catan.encoder.SIZE`. Nothing else. If the size is not in the table and the checkpoint
-does not carry its own layout, grafting refuses rather than guesses — a wrong guess produces a
-network that loads, runs, and plays nonsense.
+Adding a block, or widening one, needs **no entry here at all**: the checkpoints written
+afterwards describe themselves, which is the whole point of :func:`signature`. The table stops
+growing where it is. If the size is not in it and the checkpoint does not carry its own layout,
+grafting refuses rather than guesses — a wrong guess produces a network that loads, runs, and
+plays nonsense.
 """
 
 from catan import encoder

@@ -123,6 +123,8 @@ class ParallelSelfPlay:
             "gumbel_actions": config["gumbel_actions"],
             "playout_cap_probability": config["playout_cap_probability"],
             "playout_cap_fast": config["playout_cap_fast"],
+            "setup_simulations": config["setup_simulations"],
+            "setup_root_min_visits": config["setup_root_min_visits"],
         }
 
         self._manager = multiprocessing.Manager()

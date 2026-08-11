@@ -55,7 +55,11 @@ the reasoning at the time is the point.
 | [0023](decisions/0023-alphazero-self-play.md) | AlphaZero-style self-play, beside the PPO lineage | accepted |
 | [0024](decisions/0024-what-a-placement-can-see.md) | What a placement can see: per-resource production, harbour reach | accepted |
 | [0025](decisions/0025-how-big-should-the-network-be.md) | How big the network should be, measured rather than borrowed from Go | accepted |
+| [0026](decisions/0026-why-the-run-stopped-learning.md) | Why the run stopped learning, and what actually fixed it | accepted |
 | [0027](decisions/0027-where-a-searched-decision-goes.md) | Where a searched decision actually goes, and the six changes that came out of it | accepted |
+| [0028](decisions/0028-the-opening-is-fifty-four-moves-wide.md) | The opening is fifty-four moves wide, and PUCT was tuned for six | accepted |
+| [0029](decisions/0029-retiring-pip-potential.md) | Retiring pip potential: the guide that came first | accepted |
+| [0030](decisions/0030-one-rung.md) | One rung: the AlphaZero gate is the reigning champion and nothing else | accepted |
 
 ## Worth knowing
 

@@ -7,7 +7,7 @@ for FastAPI or Flask would touch nothing in this module.
 **Hidden information is filtered here, on the way out.** If an opponent's hand reaches the
 JSON it reaches the browser, and someone will read it. :func:`view` is the only function that
 builds a response, so it is the only place that has to get this right —
-``tests/test_web_api.py`` asserts no response ever carries an opponent's cards.
+``tests/test_web.py`` asserts no response ever carries an opponent's cards.
 
 **The client renders and reports clicks; it decides nothing.** No legality, no board
 generation. The last time this project had board logic in JavaScript it was a second
@@ -32,6 +32,7 @@ from catan.state import NO_OWNER, Phase, Piece
 from catan.topology import NUM_ROADS, NUM_TILES, NUM_VERTICES, ROAD_VERTICES
 from interfaces import render
 from interfaces.web.recorder import Recorder
+from interfaces.web.stats import GameStats, report as stats_report
 from interfaces.render import PLAYER_COLOURS as RENDER_COLOURS, Geometry
 
 #: The human always sits in seat 1, so the client never has to ask which side it is on.
@@ -57,7 +58,9 @@ WATCH_PACE_MS = 200
 #: Simulations the AlphaZero champion thinks for per move in the browser. Imported from the
 #: promotion gate rather than chosen here: a win rate belongs to a ``(weights, simulations)``
 #: pair, and a champion measured at one number and played at another is a published figure for
-#: a player nobody faces. Measured at about 32 ms a decision, which nobody notices.
+#: a player nobody faces. What a decision costs is recorded beside ``CHAMPION_SIMULATIONS``
+#: itself and moves with it; the figure that used to sit here was written when the constant
+#: was 32 and did not follow it up to 64.
 try:
     from training.alphazero.champion import CHAMPION_SIMULATIONS as AZ_SIMULATIONS
 except ImportError:                                # no torch on this checkout
@@ -100,8 +103,13 @@ def _register_learned():
         # ``champion.load`` refuses it — correctly, because a stale model plays nonsense.
         # It is not stale in any way that matters, though: the observation *grew*, and
         # ``network.graft`` widens the one affected layer with zero columns, so the grafted
-        # network computes exactly the function that was measured at 71.6% against the
-        # heuristic. Offering it here restores a learned opponent to the interface without
+        # network computes exactly the function ``models/champion.json`` records at 71.6%.
+        # That figure is not this model's strength today — commit ``e4b0441`` restricted
+        # pre-roll development-card plays after the promotion, so the number belongs to a
+        # slightly different game, and it re-measured at 49.3% over 150 games, [41.4, 57.3].
+        # The graft is sound; the recorded win rate is what is stale. See CLAUDE.md on why a
+        # ``beat_heuristic`` figure is only comparable within one version of the rules.
+        # Offering it here restores a learned opponent to the interface without
         # touching ``models/champion.pt`` or going near the promotion gate — a promotion is a
         # decision the gate makes, not a side effect of loading. See
         # ``docs/decisions/0023-alphazero-self-play.md``.
@@ -117,9 +125,14 @@ _register_learned()
 
 #: The strongest opponent available, in the order they are preferred.
 #:
-#: AlphaZero first when it exists, because it only exists once it has beaten the fixed
-#: heuristic by a Wilson lower bound above 50% — its promotion gate will not install one that
-#: has not. Both ship as files under ``models/``, and a champion trained against a different
+#: AlphaZero first when it exists, because one only becomes champion by beating the
+#: *reigning* champion over 400 games with its Wilson lower bound above 50%. That is the
+#: whole gate — the heuristic rung that used to sit beside it was removed rather than
+#: relaxed, so "AlphaZero" names the top of a ladder rather than a fixed score, and the
+#: reigning champion's record need carry no ``beat_heuristic`` figure at all. Today's does
+#: not. See ``docs/decisions/0030-one-rung.md``.
+#:
+#: Both ship as files under ``models/``, and a champion trained against a different
 #: ``encoder.SIZE`` will not load, so a fresh clone (or one without PyTorch, or one mid-way
 #: through an observation change) falls back to the heuristic.
 DEFAULT_OPPONENT = next(
@@ -292,6 +305,11 @@ class Game:
         # unreplayable — and a recording that cannot be replayed is a summary, not a record.
         self.seed = random.randrange(1 << 30) if seed is None else seed
         _, self.info = self.env.reset(seed=self.seed)
+        #: The running tally behind the Stats button. Built here rather than in the engine
+        #: on purpose: a counter on `GameState` is copied by `clone()` on every MCTS node
+        #: expansion, so a figure read once at the end of a browser game would be paid for
+        #: by every search in training. See :mod:`interfaces.web.stats`.
+        self.stats = GameStats(self.state.players)
         self.recorder = Recorder(metadata={
             "opponent": opponent,
             "rules": rules_name,
@@ -317,19 +335,31 @@ class Game:
     def state(self):
         return self.env.state
 
+    @property
+    def names(self):
+        """What to call each seat, in the log and in the statistics panel.
+
+        In a watched game there is no "you", so both sides are named after the agent playing
+        them — which is also the only way to tell two bots apart.
+        """
+        if self.watching:
+            return {HUMAN: self.watcher_name, 3 - HUMAN: self.opponent_name}
+        return {HUMAN: "You", 3 - HUMAN: "Opponent"}
+
     def _record(self, info, drew=None):
-        """Turn this step's events into log lines.
+        """Turn this step's events into log lines, and fold them into the tally.
 
         ``drew`` names the development card the *human* just bought, if any. It is worked
         out here by comparing their hand before and after, rather than recorded on the
         event: ``info["events"]`` is handed to agents, so a card id on the event would put
         hidden information somewhere an opponent could read it. The web layer knows whose
         side it is on; the engine deliberately does not.
+
+        The statistics are updated from the same events in the same place, so the panel and
+        the log cannot come to disagree about what happened.
         """
-        # In a watched game there is no "you", so both sides are named after the agent
-        # playing them — which is also the only way to tell two bots apart in the log.
-        names = ({HUMAN: self.watcher_name, 3 - HUMAN: self.opponent_name} if self.watching
-                 else {HUMAN: "You", 3 - HUMAN: "Opponent"})
+        names = self.names
+        self.stats.record(self.state, info.get("events", ()))
         for event in info.get("events", ()):
             line = describe_event(event, names)
             if drew is not None and event.kind is EventKind.BOUGHT_DEV                     and event.player == HUMAN:
@@ -444,6 +474,9 @@ class Game:
 
     def view(self):
         return view(self)
+
+    def statistics(self):
+        return statistics(self)
 
 
 # --------------------------------------------------------------------------- #
@@ -573,6 +606,40 @@ def view(game):
         "actions": _actions(state, info, your_turn),
         "log": game.log[-40:],
     }
+
+
+def statistics(game):
+    """The whole game in numbers, for the panel behind the Stats button.
+
+    Its own endpoint rather than another block on :func:`view`, for two reasons. It is
+    fetched when somebody asks for it and not four times a turn, so nothing here is on the
+    path of a move. And it is the only response that reports on the *history* of the game
+    rather than its position, which makes it the one place where "is this public?" has to be
+    asked about a running total rather than about a card — see :mod:`interfaces.web.stats`.
+
+    ``reveal`` is the same *condition* :func:`view` uses — the game being over — but the
+    two do not filter identically, and the difference is worth stating rather than glossing.
+
+    In a played game they agree: seat 1 sees its own Victory Point cards throughout, seat 2's
+    stay hidden until the end, and with them the only part of seat 2's score this cannot
+    honestly state. In a **watched** game they diverge. ``view`` keeps seat 1 as "you" and
+    hands its hidden cards back mid-game; this passes ``you=None``, so the Victory Point row
+    is withheld for *both* seats until the game ends.
+
+    The stricter rule is the right one here — nobody is playing seat 1 in a watched game, so
+    nobody is entitled to its hidden cards — and ``view``'s looser one is deliberate too: it
+    filters a watched game exactly as a played one, so the leak tests over ``view`` cover
+    watching with no second rule to keep in step. Both positions are pinned by tests;
+    ``test_a_watched_game_reveals_nobodys_hidden_cards_early`` is this one.
+    """
+    return stats_report(
+        game.state,
+        game.stats,
+        names=game.names,
+        reveal=game.info["done"],
+        # There is no "you" in a watched game, so nobody's hidden cards are shown early.
+        you=None if game.watching else HUMAN,
+    )
 
 
 def _hint(state, info, your_turn, game=None):

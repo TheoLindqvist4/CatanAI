@@ -37,7 +37,7 @@ import numpy as np
 from catan import encoder, rules
 from catan.env import CatanEnv
 from catan.rulesets import RANKED_1V1
-from catan.state import NO_OWNER
+from catan.state import NO_OWNER, Phase
 from catan.topology import NUM_ROADS, NUM_VERTICES
 from training.alphazero import replay_buffer
 from training.alphazero.determinize import determinize
@@ -159,10 +159,34 @@ class Game:
         budget = (self.config.get("simulations", 48) if self.recording
                   else self.config.get("playout_cap_fast", 24))
 
+        # --- the opening, which is neither cheap nor typical ------------------------- #
+        # A settlement placement offers 54 moves against a normal turn's six, and the two
+        # placements a player makes are seven plies apart, so this is where "which pair of
+        # spots do I end up with" is decided. Two things are wrong with treating it as one
+        # more decision. It is 4.6% of searchable decisions and the playout cap records a
+        # quarter of those, so about one placement per game reached the buffer. And PUCT
+        # tuned for six moves looks at a handful of the 54, so the choice was made among
+        # spots the prior already liked. `root_min_visits` fixes the second, and it is not
+        # paid for in time. The measurement is written down once, in Search's
+        # `root_min_visits` docstring, and argued in
+        # docs/decisions/0028-the-opening-is-fifty-four-moves-wide.md.
+        phase = self.env.state.phase
+        if phase in (Phase.SETUP_SETTLEMENT, Phase.SETUP_ROAD):
+            # Always recorded, including the road: pointing the opening road at what you
+            # intend to expand toward is part of the placement, and there are only three of
+            # them, so it costs almost nothing to search and is worth learning.
+            self.recording = True
+            budget = self.config.get("simulations", 48)
+        floor = 0
+        if phase is Phase.SETUP_SETTLEMENT:
+            budget = self.config.get("setup_simulations", budget)
+            floor = self.config.get("setup_root_min_visits", 0)
+
         self.search = Search(
             world,
             budget=budget,
             rng=self.rng,
+            root_min_visits=floor,
             c_puct=self.config.get("c_puct", 1.5),
             fpu=self.config.get("fpu", 0.25),
             # A fast search is never trained on, so root exploration would only add variance

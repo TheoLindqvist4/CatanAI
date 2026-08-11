@@ -25,9 +25,15 @@ initial audit, and the reasoning behind each decision taken — see **[`docs/`](
 | **6** | The web game — play against it in a browser | ✅ **done** |
 | **7** | A better opponent: the heuristic agent | ✅ **done** |
 | **8** | PPO self-play, the champion and its gate | ✅ **done** |
-| **9** | AlphaZero: determinized search, self-play, a second champion | ✅ **done** — 74.7% vs the heuristic |
+| **9** | AlphaZero: determinized search, self-play, a second champion | ✅ **done** — six champions so far |
+| **10** | The opening: a search wide enough to see it, a gate with one rung | ✅ **done** |
 
-598 tests. `python -m pytest -m "not slow"` runs the fast ones in ~6s.
+935 tests, and they are no longer quick. A full run takes **about six minutes** on this
+machine (374.8 s), and `python -m pytest -m "not slow"` deselects 35 and takes about six
+minutes too (353.6 s) — deselecting the slow marker buys back barely 20 seconds, because the
+cost is not the fuzzing. It is the web tests playing whole games over HTTP, and those are not
+marked slow. Two tests are timing-based and flake under load — re-run them alone before
+believing a failure, and check what else is running first.
 
 The default ruleset is **Colonist ranked 1v1** — 15 points, hand limit 9, Friendly Robber,
 Balanced Dice — with base-game Catan available as a control
@@ -49,7 +55,7 @@ catan/
                    #    hands, supplies, phase, turn.  clone() / __eq__
   actions.py       # ✅ Action = (type, position, extra)
   rules.py         # ✅ legal_actions / apply — the single legality authority
-  action_space.py  # ✅ 324 flat indices + legal_mask(state)
+  action_space.py  # ✅ 325 flat indices + legal_mask(state). Append, never insert
   encoder.py       # ✅ encoder.SIZE-float observation, perspective-rotated, hidden-info masked
   env.py           # ✅ Gymnasium-style reset(seed) / step(index)
   agents.py        # ✅ random and greedy baselines + play_match
@@ -257,7 +263,7 @@ adding 3–4 player training or human play.
       The load-bearing test asserts every action the rules can ever offer is expressible: if one
       were not, the mask would drop it silently and an agent could never choose it.
 - [x] **`encoder.py`**: a fixed-length observation (**1808** floats when this phase closed,
-      1,884 today) with named blocks (`LAYOUT`, `SHAPES`) so a
+      2,503 today) with named blocks (`LAYOUT`, `SHAPES`) so a
       graph or convolutional model can reshape rather than being forced through an MLP.
       Perspective-rotated — *me* is always player slot 0, so one network plays every seat.
       Hidden information masked per observer, enforced by **leak detectors** that mutate the
@@ -282,10 +288,11 @@ adding 3–4 player training or human play.
 
       → [docs/ai-surface.md](docs/ai-surface.md),
       [decision 0014](docs/decisions/0014-ai-surface.md)
-- [ ] **Belief sampling — a prerequisite for MCTS.** `clone(rng=state.rng)` copies `dice_deck`,
+- [x] **Belief sampling — a prerequisite for MCTS.** `clone(rng=state.rng)` copies `dice_deck`,
       `dev_deck` and opponents' `dev_cards` verbatim, so a rollout replays the same future rather
       than sampling one. Correct (these are hidden, not random) but it means search must reshuffle
-      the unseen parts. Left out deliberately: the right approach depends on the algorithm.
+      the unseen parts. Left out here deliberately, because the right approach depends on the
+      algorithm; built in Phase 9 as `training/alphazero/determinize.py`.
 - [ ] Scale `tests/test_selfplay.py` up to the 10k-game harness. The invariant checks are written;
       it is currently 60 games at 1,500 actions.
 
@@ -407,7 +414,36 @@ A local web app: Python serves the engine, the browser draws the board and posts
       whole game asserting no response ever carries the opponent's hand, their development cards
       or either deck — the same leak detectors the encoder has, applied to JSON.
 - [x] **45 tests**, including a full game played over real HTTP, illegal actions returning 400,
-      unknown games 404, and path traversal refused.
+      unknown games 404, and path traversal refused. **134 today**, across `test_web.py` and
+      `test_web_stats.py`.
+
+Added since, and worth listing because they are what a person actually sees:
+
+- [x] **The game says when it is over.** The board goes quiet by itself when someone wins —
+      nothing left to place, no actions offered — so the result used to be one grey line in the
+      hint bar that was genuinely easy to miss. An overlay announces it, with both scores and
+      where to go next. Nothing is asked of the server: `done`, `winner` and both scores are
+      already in the view that drew the last move.
+- [x] **A statistics panel**, behind a Stats button and available mid-game rather than only at
+      the end — what the dice have been doing is worth knowing while there is still something
+      to do about it. Dice distribution against what a fair deck of 36 would have given, per
+      player and per total; what each 7 cost; what the robber denied; cards produced, stolen,
+      monopolised and spent; and where every victory point came from.
+      - **Derived in the interface, not counted in the engine.** A tally on `GameState` is
+        copied by `clone()` on every MCTS node expansion — `clone` is ~4 µs and the search
+        calls it hundreds of thousands of times an hour — so a figure read once at the end of
+        one browser game would be paid for by every search in training. Three quarters of it
+        was already public state the observation needs anyway; only two things are accumulated
+        (who rolled what, and what the robber blocked).
+      - ⚠️ **`interfaces/web/stats.py::owed` is a second implementation of the production
+        walk**, which the one-source-of-truth rule would otherwise forbid — `rules.distribute`
+        skips a blocked tile with a bare `continue` and the amount is gone, so the robber's
+        damage has to be computed rather than counted.
+        `test_what_the_robber_blocked_agrees_with_the_rules` drives whole games and compares
+        the two at every roll, which is what makes it legal.
+      - **Its own endpoint**, fetched on click rather than four times a turn, so nothing here
+        is on the path of a move. Victory Point cards stay hidden until the game ends, on
+        exactly the condition `view` already uses.
 
 ## Phase 7 — A better opponent ✅
 
@@ -530,14 +566,26 @@ than by what was expected:
       overlapping almost entirely. Kept, off by default. Recorded rather than quietly dropped,
       because an unwritten negative result gets re-attempted.
 
-### Still open
+### What was still open, and how it closed
 
 - [x] **Belief sampling.** Built in Phase 9 as `training/alphazero/determinize.py`. It was
       the prerequisite for every search idea, and it is what makes the AlphaZero tree legal.
-- [ ] **A stronger critic.** The structured network's value head is worse than the flat one's
-      (MAE 0.210 against 0.074) — the one place the old architecture still wins, and the
-      likely reason PPO's one-ply lookahead bought nothing. AlphaZero trains the value head
-      on game outcomes directly, which is a different and probably better shot at it.
+- [x] **A stronger critic.** The structured network's value head was worse than the flat
+      one's (MAE 0.210 against 0.074) — the one place the old architecture still won, and the
+      likely reason PPO's one-ply lookahead bought nothing. AlphaZero trains it on game
+      outcomes directly, and that alone was not enough: five runs in a row did not move at
+      all, `policy_loss` sitting between 1.22 and 1.24 from first iteration to last. Measuring
+      the *labels* rather than the loss curve found a value head explaining **14.4%** of
+      held-out outcome variance while fitting the buffer it was trained on to 0.28 MSE — it
+      had learned to recognise the board, which is constant within a game and sits in the
+      observation, and recall the result. Six changes, none of them capacity, took held-out
+      variance explained to **35.4%**, and the candidate cleared the gate at **71.0%**
+      [66.4, 75.2] over 400 games against the champion it replaced.
+      → [decision 0026](docs/decisions/0026-why-the-run-stopped-learning.md)
+
+      The honest half of that result: **the policy label still teaches almost nothing** —
+      +0.7 points over the raw prior, p=0.85. The gain came through the critic and the data,
+      not through better policy targets, and that is the largest opportunity still open.
 
 ---
 
@@ -547,7 +595,8 @@ than by what was expected:
 The full reasoning, and every place this departs from the guide, is
 [decision 0023](docs/decisions/0023-alphazero-self-play.md). The short version:
 
-**The result.** `models/champion_az.pt`, promoted 2026-08-04 at 32 simulations a move:
+**The result this phase closed on.** The first champion of the lineage, promoted 2026-08-04 at
+32 simulations a move:
 
 | | | |
 |---|---:|---|
@@ -555,6 +604,15 @@ The full reasoning, and every place this departs from the guide, is
 | against the PPO champion | **76.5%** | 306-94, [72.1, 80.4], 400 games |
 
 Three stages, ~2h40m of training on 20 CPU cores, 615,307 positions in the final stage alone.
+
+⚠️ **Five promotions later those numbers belong to a model nobody plays.** `models/champion_az.pt`
+is `gen6-gilded-beacon`, promoted 2026-08-06: **55.25%** over 400 games against the champion
+before it, [50.35, 60.05]. Its record carries no heuristic figure at all, because the gate
+stopped playing the heuristic — Phase 10. The last champion measured there is `gen4-ashen-wheat`
+at 92.7%, two promotions ago. Every promotion overwrites one file, so "the champion scores X"
+is a sentence that rots; a champion is now named from a digest of its own weights, and the name
+is what fixes the reference.
+
 Training is **pure self-play** — one network plays both seats, there is no opponent pool, and
 the heuristic never generates a training position. It appears only as a yardstick.
 
@@ -581,6 +639,99 @@ gathering priors, and `np.asarray` over lists of lists) were worth 13% together;
 pool from a sample-count share to a wall-clock slice was worth considerably more, because
 samples bank in cohorts and `pool.map` waits for the slowest worker.
 
+---
+
+## Phase 10 — The opening, and what "promoted" means ✅
+
+The pipeline worked. What the search was *looking at*, what the observation was still telling
+it, and what the word "promoted" meant each turned out to need changing — and the champion was
+playing at 32 simulations when the latency budget allowed 64. Each has a record.
+
+- [x] **The opening is fifty-four moves wide, and PUCT was tuned for six.** A settlement
+      placement offers 54 legal spots against a normal turn's six, and a player's two
+      placements are seven plies apart, so this is where the *pair* is decided. Measured on
+      `gen6-gilded-beacon` at the settings the agent actually plays at — no root noise, 40
+      distinct boards (24 at 1,600 simulations) — the search examines:
+
+      | simulations | spots examined, of 54 |
+      |---:|---|
+      | 64 | 3.6 (median 3, range 1–11) |
+      | 400 | 5.9 (median 5, 2–54) |
+      | 1600 | 8.2 (median 7, 2–54) |
+
+      **Budget buys breadth very slowly**: 25x the simulations takes it from 3.6 to 8.2, so the
+      opening was being chosen among about three spots the prior already liked. Depth was never
+      the problem. `root_min_visits` gives every legal spot a floor of visits before PUCT may
+      concentrate; at 400 simulations with a floor of 4 the search reaches **all 54 spots on 40
+      of 40 boards**, and every legal spot at all four placements, for **0.319 s against plain
+      PUCT's 0.335 s** (n=40, one torch thread) — slightly cheaper, because the forced sweep
+      builds a shallower tree. Settlements get their own budget (`setup_simulations`, 400), and
+      setup is exempt from the playout cap and always recorded, including the road.
+      → [decision 0028](docs/decisions/0028-the-opening-is-fifty-four-moves-wide.md)
+
+      Two things that reading "54 of 54" would otherwise get wrong. **The sweep is measurement,
+      not preference**: `_discretionary_counts` subtracts the floor before the move is chosen
+      and before the policy target is recorded, so the target still concentrates on a median 3
+      spots — the breadth is in the value estimates. And **a floor of 8 degenerates silently**
+      at this budget: 8 x 54 = 432 forced visits against the 399 available — 400 simulations
+      leave 399 root visits, because the first expands the root and backs up along an empty
+      path — so the sweep never completes, the discretionary counts are all zero and the
+      fallback returns a near-uniform target. The shipped 4 needs 216 and is clear of it;
+      there is not room for much more.
+
+      ⚠️ **None of this measures whether the agent plays better for it.** It measures what the
+      search looks at. A strength claim is what the promotion gate is for.
+
+- [x] **`pip_potential` retired to 0.0.** The observation's oldest placement feature sums the
+      odds of a vertex's tiles and throws the resources away, so three sheep and an even
+      three-way spread are the same number. It worked, in the sense that the agent had learned
+      it exactly — 0.005 pips off the best available spot. The evidence against it: openings
+      covering five resources win where three-resource ones do not, [81.9, 98.5] against
+      [45.8, 70.4] and non-overlapping, which is precisely the distinction the feature cannot
+      make; record 0024 had already added the per-resource production that supersedes it. The
+      pips-against-wins cut is *weak* — four bands, not monotone, every interval overlapping
+      every other — and the decision does not rest on it. **The slot stays and writes 0.0**
+      rather than being deleted: removing it would move every offset after it inside a vertex
+      row and stop `models/champion_az.pt` loading, which per `CLAUDE.md` makes the next
+      promotion ungated by construction.
+      → [decision 0029](docs/decisions/0029-retiring-pip-potential.md)
+
+- [x] **One rung in the AlphaZero gate.** It was three — the heuristic, the PPO champion, the
+      reigning AlphaZero champion — which makes "promoted" a conjunction of three noisy
+      measurements and lets two promotions mean different things. Now a candidate is installed
+      when it beats `models/champion_az.pt` with its Wilson lower bound above 50% over 400
+      games, and for no other reason. The other two are *recorded, never consulted* — but
+      only the heuristic is off by default. `--ppo-games` falls back to the head-to-head game
+      count, so a bare `promote` plays two matches whenever a PPO champion loads, and only
+      the first can refuse; `chain.py` passes 0 for that rung as well, which is why an
+      overnight run plays one. That is the chain's choice, not the gate's default.
+      The argument for the heuristic rung is still true — self-play is non-transitive, so a
+      candidate can climb by learning the champion's habits while getting worse at the game —
+      and it was dropped anyway, deliberately, so a test pins its absence rather than leaving
+      it to drift back.
+      **A first promotion of a lineage is now refused** instead of installing unmeasured,
+      which is what the PPO gate still does and which fires exactly when `encoder.SIZE` has
+      changed and nobody is watching; installing one is an explicit `--force --reason` that
+      the record carries forever as `forced`.
+      → [decision 0030](docs/decisions/0030-one-rung.md)
+
+- [x] **Champions have names, and runs chain overnight.** Every promotion overwrites one file,
+      so a name is derived from a SHA-256 of the weights themselves — the same weights always
+      produce the same name, and `gen6-gilded-beacon` says both which and when.
+      `training.alphazero.chain` runs train → rank-with-search → gate in a loop against a
+      wall-clock deadline, each stage in its own directory and nothing ever deleted, because a
+      losing checkpoint is still a rung somebody can start from. Stages run as subprocesses so
+      that one bad iteration costs its own hours and not the night.
+
+- [x] **The champion plays at 64 simulations, not 32.** Search was still buying strength at
+      that network size: measured against the fixed heuristic over 200 games apiece, 0 sims
+      (raw policy) 64.8%, 16 sims 73.4%, 32 sims 74.4%, 64 sims 78.9%, 128 sims 81.9%. Still
+      climbing at 128, so this is a **latency** choice and not a strength one — one decision
+      costs 52 ms at 32, 101 ms at 64 and 207 ms at 128 on one thread, and 207 ms does not fit
+      inside the 200 ms pace a watched game is played back at. `CHAMPION_SIMULATIONS` is
+      imported by both interfaces rather than copied, because a win rate belongs to a
+      `(weights, simulations)` pair.
+
 ## What this deliberately does not include
 
 - **Multi-machine training.** The guide's stage 3 — workers on several machines feeding a
@@ -595,7 +746,7 @@ samples bank in cohorts and `pool.map` waits for the slowest worker.
 
 ## Decisions
 
-All nine records in [`docs/decisions/`](docs/decisions/) are settled. Two were resolved going into
+All 30 records in [`docs/decisions/`](docs/decisions/) are settled. Two were resolved going into
 Phase 1: longest road uses a **strict simple path** with an opponent's building breaking a chain
 ([0006](docs/decisions/0006-longest-road-intersection-reuse.md)), and `catan/` was **built fresh**
 ([0007](docs/decisions/0007-package-layout-rewrite-vs-incremental.md)).

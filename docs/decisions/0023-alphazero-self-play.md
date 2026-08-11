@@ -155,6 +155,29 @@ The ladder has three rungs rather than two: the fixed heuristic, the *PPO champi
 reigning AlphaZero champion. Without the middle rung the two lineages never meet and "which
 should the interface offer" has no answer.
 
+> **Amended, 2026-08-11. The three paragraphs above describe the gate as it was built and are
+> no longer true of the code.** They are kept because two champions in
+> `models/champion_az.json` were promoted under them — the `first_of_lineage: true` entry of
+> 2026-08-04, and the forced `iter_168` promotion later that day — and a record that quietly
+> rewrote itself would make those entries unreadable.
+>
+> **What superseded them.** The AlphaZero gate is now **one rung: the reigning champion**.
+> Wilson lower bound over 400 games, and nothing else, decides. The heuristic rung and its
+> `MAX_BASELINE_REGRESSION` check are removed from `training.alphazero.champion.promote`;
+> `--baseline-games` defaults to 0 and, when asked for, records the number without ever
+> vetoing, as does `--ppo-games`. A first promotion of a lineage is **refused** rather than
+> gated on the heuristic — with no reigning champion there is nothing to measure against —
+> and installing one is an explicit `--force --reason` that the record carries forever.
+>
+> So the ladder is one rung, which is *fewer* than the PPO lineage's two, not more. And
+> `first_of_lineage: true` is no longer written by any code path: it survives only on the
+> 2026-08-04 entry that was promoted while the flag existed.
+>
+> The reasoning, both sides of the trade-off, and the accepted cost — `beat_heuristic` is now
+> `null` for gen5 and gen6, so the lineage has no external anchor unless somebody asks for one
+> — are in **[record 0030](0030-one-rung.md)**. The PPO gate in `training/champion.py` is
+> unchanged, still has both checks, and still installs immediately when `reigning is None`.
+
 ### D11 — The run is warm-started from the PPO champion, via a zero-column graft
 
 This is the largest departure from the guide, which says "learns entirely from self-play".

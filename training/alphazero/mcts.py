@@ -204,12 +204,65 @@ class Search:
             do not. The construction is a policy improvement at any budget, which plain
             visit counts are not.
         gumbel_actions, c_visit, c_scale: see the module constants.
+        root_min_visits: give every root candidate at least this many visits before PUCT is
+            allowed to concentrate. 0 disables it, which is every caller that does not say
+            otherwise. Intended for wide roots — an opening settlement offers 54 moves
+            against a typical turn's six, and PUCT was tuned for the six.
+
+            **This is the one place the breadth measurement is written down.** Every other
+            site in the package points here and at
+            ``docs/decisions/0028-the-opening-is-fifty-four-moves-wide.md``, because six
+            copies of it drifted apart. Distinct root spots the search examines at the
+            first settlement of a fresh ``RANKED_1V1`` game, on the reigning
+            champion gen6-gilded-beacon, 40 boards (24 at 1,600 simulations), mean with the
+            median in brackets:
+
+                 sims   noise 0     noise 0.10    noise 0.25
+                   64   3.6 (3)     —             5.0 (4)
+                   96   4.2 (3)     4.7 (3)       6.3 (4.5)
+                  400   5.9 (5)     7.2 (5.5)     12.4 (11)
+                1,600   8.2 (7)     14.4 (12.5)   24.1 (22.5)
+
+            The noise column matters more than the budget. ``noise=0`` is what play, the
+            arena and the promotion gate use; 0.10 is this repository's ``dirichlet_weight``;
+            0.25 is AlphaZero's. The figures this table replaced — 13.8 at 400 and 15.6 at
+            1,600 — are only reproducible near 0.25, and so overstated what the agent
+            actually sees by about 2x. That is the likeliest explanation for them rather than
+            a certain one: the quantity is noisy enough that a few-seed sample could land
+            there too.
+
+            The distribution has a heavy right tail and a mean flatters it. At 400
+            simulations and ``noise=0``, 39 of 40 boards examine 2-10 spots and one examines
+            all 54, which alone lifts the mean from 5.1 to 5.9. Read the medians.
+
+            With the floor at 4 and 400 simulations the sweep always completes: **54 of 54
+            spots on 40 of 40 boards**, at ``noise=0`` and at 0.10 alike, and at all four
+            settlement placements of an opening — 54/54, 50/50, 46/46, 42/42 over 16 seeds,
+            the later placements being narrower because earlier ones took spots away. It is
+            not paid for in time: 0.319 s against plain PUCT's 0.335 s at one torch thread,
+            n=40, because the forced sweep builds a shallower tree.
+
+            ⚠️ **A floor is only safe while the whole sweep fits inside the budget.**
+            4 x 54 = 216 of the root's 399 visits leaves room; 8 x 54 = 432 does not, and at
+            8 the sweep stops at 50 spots with the discretionary counts identically zero on
+            40 of 40 boards. The margin at 400 simulations is 400/54 = 7.4 visits per spot,
+            so any floor of 8 or more degenerates silently. See
+            :meth:`_discretionary_counts` for what that degeneration looks like.
+
+            Breadth is a property of the ``(weights, settings)`` pair — a flatter prior
+            explores wider — so every number above belongs to gen6-gilded-beacon and to
+            nothing else. None of them says the floor makes the agent *play* better. That is
+            a strength claim and the promotion gate is what settles it.
+
+            The forced visits are stripped out of ``best_action`` and ``policy_target`` by
+            :meth:`_discretionary_counts`; read its docstring before changing either.
+            Ignored entirely when ``gumbel`` is set — see :meth:`_descend`.
     """
 
     def __init__(self, state, budget=48, rng=None, c_puct=C_PUCT, fpu=FPU_REDUCTION,
                  noise=DIRICHLET_WEIGHT, alpha=DIRICHLET_ALPHA, max_turns=400,
                  gumbel=False, gumbel_actions=GUMBEL_ACTIONS, c_visit=C_VISIT,
-                 c_scale=C_SCALE):
+                 c_scale=C_SCALE, root_min_visits=0):
         if state.num_players != 2:
             raise ValueError("this search propagates a zero-sum scalar in seat 1's frame, "
                              "which is only meaningful for two players")
@@ -224,6 +277,7 @@ class Search:
         self.gumbel_actions = int(gumbel_actions)
         self.c_visit = float(c_visit)
         self.c_scale = float(c_scale)
+        self.root_min_visits = int(root_min_visits)
 
         self.root = _node_for(state, max_turns, settle=False)
         self.simulations = 0
@@ -268,7 +322,14 @@ class Search:
         return None
 
     def visit_counts(self):
-        """``(actions, counts)`` at the root — the improved policy AlphaZero learns from."""
+        """``(actions, counts)`` at the root, raw — exactly the numbers the tree holds.
+
+        **Not what is learned from, and not what is played.** Under ``root_min_visits`` the
+        first slice of the budget is a forced sweep rather than preference, so both
+        :meth:`best_action` and :meth:`policy_target` read :meth:`_discretionary_counts`
+        instead. With no floor — every caller that does not ask for one — the two are the
+        same array and this is AlphaZero's improved policy in the usual sense.
+        """
         if self.root.kind is not DECISION or not self.root.expanded:
             return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.float64)
         return (np.asarray(self.root.actions, dtype=np.int64),
@@ -294,7 +355,7 @@ class Search:
             # applied twice and would undo the improvement guarantee.
             return int(actions[int(self._candidates[
                 np.argmax(self._root_scores()[self._candidates])])])
-        counts = np.asarray(self.root.child_n, dtype=np.float64)
+        counts = self._discretionary_counts()
         if counts.sum() == 0:
             return int(actions[int(np.argmax(self.root.prior))])
         if temperature <= 1e-3:
@@ -467,7 +528,7 @@ class Search:
             return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.float64)
         actions = np.asarray(node.actions, dtype=np.int64)
         if not self.gumbel:
-            counts = np.asarray(node.child_n, dtype=np.float64)
+            counts = self._discretionary_counts()      # the forced sweep is not preference
             total = counts.sum()
             if total <= 0:
                 return actions, np.asarray(node.prior, dtype=np.float64)
@@ -523,8 +584,22 @@ class Search:
                 continue
             if not node.expanded:
                 return node, path
-            slot = (self._select_root_gumbel()
-                    if self.gumbel and node is self.root else self._select(node))
+            slot = None
+            if node is self.root:
+                # ⚠️ Gumbel wins, and `root_min_visits` is then **inert** — no error, no
+                # warning, no sweep. `gumbel: true` with `setup_root_min_visits: 4` is a
+                # legal configuration and the floor simply never runs, so an opening would
+                # quietly go back to whatever Sequential Halving samples. The precedence is
+                # deliberate: Halving owns the root's budget by construction and a forced
+                # sweep on top of it would break the improvement guarantee that is the whole
+                # reason to use it. Nothing ships in that state — `gumbel` is off by default
+                # and off in configs/train_v2.yaml, for the reasons in record 0026.
+                if self.gumbel:
+                    slot = self._select_root_gumbel()
+                elif self.root_min_visits:
+                    slot = self._select_root_floor(node)   # None once the sweep is done
+            if slot is None:
+                slot = self._select(node)
             path.append((node, slot))
             child = node.children.get(slot)
             if child is None:
@@ -586,6 +661,62 @@ class Search:
             child = _node_for(world, self.max_turns)
             node.children[roll] = child
         return child
+
+    def _discretionary_counts(self):
+        """Root visit counts with the forced sweep removed.
+
+        ``root_min_visits`` spends the first slice of the budget giving every root candidate
+        the same look. That is *measurement, not preference*, and it must reach neither the
+        move played nor the policy target. At the shipped opening settings — 400 simulations,
+        a floor of 4, a 54-wide root — 216 of the root's 399 visits are the sweep and 183 are
+        PUCT's own. Left in, the recorded target would be more than half forced mass spread
+        flat across the board, so sampling it at temperature 1.0 would pick an arbitrary spot
+        most of the time: the search would have been made *worse* by looking at more of it.
+
+        Subtracting the floor leaves exactly the visits PUCT chose to spend, which is what
+        plain AlphaZero's target already is. Those 183 land on a mean of 3.5 distinct spots
+        (median 3, range 1-9, 40 boards), so the *label* stays about as narrow as plain
+        PUCT's. The sweep buys breadth in the value estimates and in what the search looked
+        at, not in what it records — worth saying plainly, because "54 of 54 spots" reads as
+        though the target itself became broad.
+
+        ⚠️ **The ``else counts`` fallback is wrong, and is documented rather than changed.**
+        It returns the raw counts when nothing is discretionary, and in that case the raw
+        counts are near-uniform by construction: every spot the sweep reached sits at exactly
+        the floor. ``best_action`` then takes the ``argmax`` of a tie, which is the
+        lowest-numbered slot, and ``policy_target`` records a flat label. Both callers
+        already have a better branch — a zero sum falls back to the network's *prior*, which
+        at least ranks the spots — and this fallback pre-empts it. Measured at a floor of 8
+        and 400 simulations, where the sweep cannot complete: the discretionary sum is
+        identically zero on 40 of 40 boards, and on one of them ``best_action(0.0)`` returned
+        75 and ``best_action(1.0)`` returned 78, an arbitrary pick among 49 spots tied at 8
+        visits — exactly the failure the paragraph above says subtracting the floor prevents.
+        It did not fire once at the shipped floor of 4, where the sweep completes on every
+        board measured and leaves 183 visits over. Changing it changes what the agent plays,
+        so it is a known issue rather than a patch made in passing: see the limitations
+        section of ``docs/decisions/0028-the-opening-is-fifty-four-moves-wide.md``.
+        """
+        counts = np.asarray(self.root.child_n, dtype=np.float64)
+        if not self.root_min_visits:
+            return counts
+        discretionary = np.maximum(counts - self.root_min_visits, 0.0)
+        return discretionary if discretionary.sum() > 0 else counts
+
+    def _select_root_floor(self, node):
+        """A root slot still short of the floor, or ``None`` once every slot has met it.
+
+        PUCT concentrates, which is right when a position offers nine moves and wrong when it
+        offers fifty-four. What it reaches on its own, what the floor changes, and what the
+        floor costs are measured once in :class:`Search`'s ``root_min_visits`` docstring and
+        argued in ``docs/decisions/0028-the-opening-is-fifty-four-moves-wide.md``.
+
+        Highest prior first, so that a budget exhausted mid-sweep has spent itself on the
+        likeliest spots rather than on whichever slot sorts first.
+        """
+        below = node.child_n < self.root_min_visits
+        if not below.any():
+            return None
+        return int(np.argmax(np.where(below, node.prior, -np.inf)))
 
     def _select(self, node):
         """PUCT. Returns the slot to descend into."""

@@ -46,13 +46,14 @@ per-tile, per-vertex or per-road block and reshape it — a graph or convolution
 ``(19, TILE_FEATURES)`` rather than a flat run. The blocks are:
 
     tiles         19 x 19   resource, number, production odds, robber
-    vertices      54 x 16   owner, piece, harbour, pip potential, buildability
+    vertices      54 x 27   owner, piece, harbour, buildability, per-resource production,
+                            harbour nearness — and one retired slot, see :data:`PIP_POTENTIAL`
     roads         72 x  6   owner, buildability
-    players        4 x 29   hands and holdings, masked for opponents
+    players        4 x 34   hands and holdings, masked for opponents, production rate
     affordability  4 x  4   my hand against each purchase, priced through my trade rates
     history        4 x 12   the public record: production, spending, purchases, idleness
     rolls              12   how often each total has come up, and how far in we are
-    global             35   phase, last roll, bank, ruleset, turn bookkeeping
+    global             40   phase, last roll, bank, ruleset, turn bookkeeping, board scarcity
 
 Every value is scaled into roughly ``[0, 1]``, using exact maxima where one exists (a
 resource count cannot exceed the bank's 19) and a documented soft cap otherwise.
@@ -159,7 +160,7 @@ VERTEX_FEATURES = (
     (MAX_PLAYERS + 1)     # owner: empty, then one slot per player
     + 1                   # is a city (a settlement is owner set and this clear)
     + HARBOUR_KINDS       # harbour one-hot
-    + 1                   # pip potential: summed odds of the adjacent tiles
+    + 1                   # retired: written 0.0, the slot kept. See PIP_POTENTIAL
     + 1                   # satisfies the distance rule
     + 1                   # reachable from my road network
     # ---- appended; everything above keeps the offset it had ----------------- #
@@ -208,6 +209,36 @@ VERTEX_OFFSETS = {
     "production": MAX_PLAYERS + 5 + HARBOUR_KINDS,
     "harbour_reach": MAX_PLAYERS + 5 + HARBOUR_KINDS + NUM_RESOURCES,
 }
+
+#: Whether the per-vertex ``pip_potential`` slot carries its value or a constant 0.
+#:
+#: **The slot stays either way.** Deleting the field would move every offset after it inside
+#: a vertex row and change :data:`SIZE`. The vertices block would have *shrunk*, and
+#: ``layouts.column_map`` reconciles only blocks that grew — it raises rather than invent a
+#: column correspondence that does not exist, so no existing checkpoint could be grafted onto
+#: the result. ``layouts.HISTORICAL`` is not what stands in the way, whatever this comment
+#: used to say: it is keyed 1868 and 1884 only, and a 2503 checkpoint carries its own layout,
+#: so the table is never consulted for one. Writing 0.0 removes the *information* at no
+#: compatibility cost and leaves ``SIZE`` alone, so ``models/champion_az.pt`` keeps loading —
+#: which matters, because with no loadable champion the AlphaZero gate has nothing to measure
+#: against and ``training.alphazero.champion`` refuses to promote at all.
+#:
+#: **Reversing it is not one line.** ``test_pip_potential_is_retired_but_its_slot_is_still_there``
+#: asserts the flag is off, so flipping it here fails a test. The arithmetic is kept and
+#: tested, so *trying* it costs nothing; shipping it flipped is a two-file change, which is
+#: the point.
+#:
+#: **Why it is off.** It is the summed odds of the adjacent tiles with the resources thrown
+#: away, so three sheep and an even three-way spread are the same number. It was the only
+#: placement signal the observation had, and the agent maximised it essentially perfectly —
+#: 0.005 pips off the best available spot. Record 0024 added the per-resource production that
+#: supersedes it. That more pips *lose* is not established and is not the argument: the bands
+#: hold 39 to 77 games each, they are not monotone, and their intervals overlap — record 0024
+#: says of its own version of that table "at 240 games that did not hold". Resource diversity
+#: is the result that held. See ``docs/decisions/0029-retiring-pip-potential.md`` for the
+#: tables and the argument; this retires the guide that came first rather than leaving it to
+#: be unlearned.
+PIP_POTENTIAL = False
 
 #: Where each appended field sits inside one player row.
 PLAYER_OFFSETS = {"production": PLAYER_FEATURES - NUM_RESOURCES}
@@ -335,7 +366,8 @@ def _static_template(board):
     """The parts of an observation that depend on the *layout* and never on play.
 
     Which resource sits on a tile, its number token, its odds, which harbours a vertex can
-    reach, and the pip potential of a vertex are all fixed the moment the board is generated.
+    reach and how far off they are, and what each corner expects to produce of each resource
+    are all fixed the moment the board is generated.
     Recomputing them on every encode is most of what encoding costs — profiling a training
     rollout put ``_encode_vertices`` at 45% of the total, nearly all of it in one generator
     expression summing three tiles' odds for a board that had not changed in 14,000 calls.
@@ -377,11 +409,17 @@ def _static_template(board):
                 out[at + (1 if harbour is GENERIC_HARBOUR else 2 + int(harbour))] = 1.0
         at += HARBOUR_KINDS
 
-        # the classic settlement heuristic: how often this spot pays out at all.
-        # The 0.0 start matters: a corner touching only the desert sums an empty
-        # generator, and bare sum() would return int 0 into a float vector.
+        # The classic settlement heuristic, retired — this slot is written 0.0. See
+        # PIP_POTENTIAL. The production tuple is read either way: the per-resource split
+        # below is what replaced it.
+        # The 0.0 start to sum() no longer does anything, and is kept only so the retired
+        # branch stays byte-identical to what it computed before. It guarded an earlier
+        # version that summed a *generator* over the adjacent tiles, where a corner touching
+        # only the desert summed an empty one and bare sum() returned int 0 into a float
+        # vector. expected_production now returns a 5-tuple of floats at every vertex, so
+        # that sum is 0.0 with or without the start.
         production = board.expected_production(vertex)
-        out[at] = sum(production, 0.0)
+        out[at] = sum(production, 0.0) if PIP_POTENTIAL else 0.0
         at += 1
 
         # Past the two buildability flags, which are play and are written per encode.
@@ -573,8 +611,8 @@ def _encode_tiles(state, out):
 def _encode_board(state, out, me, slots):
     """The vertices block and the roads block, which want the same walk.
 
-    Harbours and pip potential come from the template; what is written here is ownership and
-    the three buildability flags.
+    Harbours, harbour nearness, the per-resource production and the retired pip slot all come
+    from the template; what is written here is ownership and the three buildability flags.
 
     The flags are derived from what is *owned* rather than by asking
     :func:`catan.rules.respects_distance_rule` and :func:`catan.rules.touches_own_road` per
@@ -608,7 +646,7 @@ def _encode_board(state, out, me, slots):
             my_junctions.update(ROAD_VERTICES[road])
 
     # offset of the two buildability flags within a vertex block, past the harbour
-    # one-hot and the pip potential
+    # one-hot and the retired pip slot, which is still there and still one wide
     flags = (MAX_PLAYERS + 1) + 1 + HARBOUR_KINDS + 1
     base = LAYOUT["vertices"].start
     # Vertices I can build outward from: mine, or empty and met by one of my roads — the

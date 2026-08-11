@@ -21,6 +21,7 @@ Routes
                                   a spectated agent-versus-agent one rather than a played
                                   one
 ``GET  /api/game/<id>``           the current position, as the human may see it
+``GET  /api/game/<id>/stats``     the whole game in numbers, asked for by a click not a move
 ``POST /api/game/<id>/action``    play: ``{"index": n}``
 ``POST /api/game/<id>/advance``   play one of the opponent's moves, so it can be watched
 """
@@ -79,6 +80,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_static(IMAGES, path[len("/images/"):])
             if path == "/api/geometry":
                 return self._send_json(api.geometry())
+            # Before the bare game route, which would otherwise take "3/stats" for an id.
+            # Its own request because it is asked for by a click rather than by a move: the
+            # per-move payload stays exactly the size it was.
+            if path.startswith("/api/game/") and path.endswith("/stats"):
+                game_id = path[len("/api/game/"):-len("/stats")]
+                return self._send_json(GAMES.get(game_id).statistics())
             if path.startswith("/api/game/"):
                 return self._send_json(GAMES.get(path[len("/api/game/"):]).view())
         except KeyError as error:

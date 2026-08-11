@@ -29,6 +29,10 @@
       </label>
       <label>Seed <input id="seed" type="number" placeholder="random"></label>
       <button id="new-game">New game</button>
+      <!-- Available at any point, not only at the end: what the dice have been doing is
+           worth knowing while there is still something to do about it. Fetched on click
+           from its own endpoint, so the payload behind every move stays the size it was. -->
+      <button id="stats">Stats</button>
     </div>
   </header>
 
@@ -67,6 +71,12 @@
       </div>
     </aside>
   </main>
+
+  <!-- Both filled in by app.js and hidden until they have something to say. The board is
+       what they are about, so they are drawn over it rather than beside it — and a game
+       that has ended has nothing left to click underneath. -->
+  <div id="result" class="overlay" hidden></div>
+  <div id="stats-modal" class="overlay" hidden></div>
 
   <script src="/app/app.js"></script>
 </body>

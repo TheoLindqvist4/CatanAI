@@ -12,14 +12,22 @@ The interfaces read ``models/`` and never ``checkpoints/``, so a training run ca
 a game in progress. Installation is a rename over a fully written file, so a game that loads
 the champion mid-promotion gets either the old one or the new one and never half of either.
 
-**The first promotion is gated too, and that is the point of this module existing rather
-than reusing :mod:`training.champion`.** ``CLAUDE.md`` records the hole in the older gate: when
-no champion loads, ``promote`` takes its ``reigning is None`` branch and installs
-*immediately* — no Wilson bound, no regression check — and then writes the ``beat_heuristic``
-baseline that every later candidate is measured against. It fires exactly when the encoder has
-changed, which is exactly when nobody is watching for it. Here, a first candidate still has to
-beat the fixed heuristic with its Wilson lower bound above 50% before it is installed, and the
-record says in so many words that it was the first.
+**One rung decides: the reigning champion.** A candidate is installed when it beats
+``models/champion_az.pt`` with its Wilson lower bound above 50% over ``games``, and for no
+other reason. The heuristic is played only when ``--baseline-games`` asks for it, and even
+then it is recorded rather than consulted — the number is history, not a veto. The argument
+that used to justify a heuristic rung is still sound (self-play is non-transitive, so a
+candidate can climb the ladder by learning the champion's habits while getting worse at the
+game); it was removed on purpose, so that "promoted" means exactly one measurable thing.
+
+**The first promotion of a lineage is refused rather than waved through, which is why this
+module exists rather than reusing :mod:`training.champion`.** ``CLAUDE.md`` records the hole
+in the older gate: when no champion loads, ``promote`` takes its ``reigning is None`` branch
+and installs *immediately*, then writes the baseline every later candidate is measured
+against. It fires exactly when the encoder has changed, which is exactly when nobody is
+watching. With the heuristic rung gone there is nothing left to gate a first candidate on, so
+it is refused outright and installing one is an explicit ``--force --reason`` that the record
+carries forever.
 """
 
 import argparse
@@ -45,8 +53,10 @@ PPO_CHAMPION = MODELS / "champion.pt"
 #:
 #: This was 300 while matches were sequential. A searching agent runs the network once per
 #: simulation at batch 1, so a game costs 5.2 seconds at 32 simulations against 0.29 without
-#: search, and 400 games is half an hour *per rung* with three rungs to play — which is how a
-#: gate stops being run. :mod:`training.alphazero.arena` plays the match across processes and
+#: search, and 400 games was half an hour *per rung* with three rungs then being played —
+#: which is how a gate stops being run. Only one rung decides now and the heuristic is off by
+#: default, so the gate plays two matches at most.
+#: :mod:`training.alphazero.arena` plays the match across processes and
 #: brings a rung back to a couple of minutes, so the number is set by what makes a good gate
 #: rather than by what fits in an afternoon.
 PROMOTION_GAMES = 400
@@ -124,11 +134,16 @@ def name(default="unnamed"):
 #: their own copy.
 #:
 #: 64, raised from 32, because search still buys strength at this network size — measured
-#: against the fixed heuristic over 200 games apiece:
+#: against the fixed heuristic over 200 games apiece, on the champion of the day rather than
+#: on this one (the 74.4% at 32 simulations is the figure in gen2's record):
 #:
 #:      0 sims (raw policy)  64.8%      64 sims   78.9%
 #:     16 sims               73.4%     128 sims   81.9%
 #:     32 sims               74.4%
+#:
+#: The shape of that table is the claim, not its level. The reigning champion,
+#: gen6-gilded-beacon, carries ``beat_heuristic: null`` — it has never played the heuristic,
+#: because the gate stopped asking.
 #:
 #: Still climbing at 128, so this is a *latency* choice rather than a strength one. One
 #: decision costs 52 ms at 32, 101 ms at 64 and 207 ms at 128 on one thread, and 207 ms does
@@ -138,9 +153,11 @@ def name(default="unnamed"):
 #: to the simulation count it was measured at.
 CHAMPION_SIMULATIONS = 64
 
-#: How far a candidate may fall against the fixed baseline before promotion is refused, even
-#: if it beat the champion.
-MAX_BASELINE_REGRESSION = 0.05
+# There is deliberately no baseline-regression limit here any more. The gate is the reigning
+# champion and nothing else; the heuristic is measured only when asked for, and never vetoes.
+# `training.champion` — the PPO lineage — still has one, and is unchanged. Plain `#`, not
+# `#:`: a doc-comment left where its constant used to be documents whatever follows it, and
+# what follows it is `load`.
 
 
 def load(path=None, simulations=CHAMPION_SIMULATIONS, temperature=0.0, seed=None):
@@ -178,8 +195,11 @@ def load(path=None, simulations=CHAMPION_SIMULATIONS, temperature=0.0, seed=None
         # their learned opponent once already. It does not have to: every change to this
         # observation appends, so `network.graft` gives the new columns zero weight and the
         # result computes *exactly* the function that was measured. Verified rather than
-        # asserted — this champion scored 74.7% before the change and 75.6% after, over 400
-        # and 200 games. See ``docs/decisions/0024-what-a-placement-can-see.md``.
+        # asserted — the champion of the time, the 1,884-float one, scored 74.7% before the
+        # change and 75.6% after, over 400 and 200 games. Several promotions have happened
+        # since, so that pair is evidence about the graft and about nothing else; it is not a
+        # statement about how strong the champion is today.
+        # See ``docs/decisions/0024-what-a-placement-can-see.md``.
         try:
             from training.alphazero.network import load_for_alphazero
 
@@ -262,17 +282,20 @@ def promote(candidate_path, games=PROMOTION_GAMES, seed=41_000,
     Args:
         games: the head-to-head rung against the reigning champion. This is the one that
             decides, so it is the one that should stay large.
-        baseline_games: games against the fixed heuristic. Defaults to ``games``.
+        baseline_games: games against the fixed heuristic, **recorded and never a veto**.
+            Defaults to 0, which does not play it at all.
 
-            **This rung is not "can it beat the heuristic".** Every champion since the
-            first has won it comfortably. It is the *anti-overfitting tripwire*: self-play
-            is non-transitive, so a candidate can beat the champion by learning its habits
-            while getting worse at the game, and the only thing that notices is a fixed
-            external opponent. See :data:`MAX_BASELINE_REGRESSION`. Lowering it trades
-            statistical power for wall-clock; setting it to 0 removes the safeguard, which
-            is a real choice and not a free one — especially in a chain of runs where each
-            stage is judged only against its own predecessor.
-        ppo_games: games against the PPO champion, recorded but never a veto. 0 skips it.
+            It used to be the anti-overfitting tripwire, and the argument for it is still
+            true: self-play is non-transitive, so a candidate can beat the champion by
+            learning its habits while getting worse at the game, and a fixed external
+            opponent is the only thing that notices. It was removed deliberately — the gate
+            is now strictly "did it beat the champion" — so that one rung decides and the
+            promotion means exactly one thing. Pass a positive number to record the yardstick
+            for the history; nothing will refuse a promotion on it.
+        ppo_games: games against the PPO champion, recorded but never a veto. **Defaults to
+            ``games``**, unlike ``baseline_games`` above — so a bare ``promote`` plays two
+            matches whenever a PPO champion loads, and only the first of them can refuse.
+            0 skips it, which is what :mod:`training.alphazero.chain` passes.
         force: install without requiring the head-to-head rung. The record then carries
             ``"forced": true`` and ``"forced_reason"``, because a promotion that did not pass
             the gate must never be mistaken for one that did — and a year later the only
@@ -298,7 +321,7 @@ def promote(candidate_path, games=PROMOTION_GAMES, seed=41_000,
     # minutes *per rung*, which is how a gate stops being run — see
     # :mod:`training.alphazero.arena`.
     me = {"kind": "mcts", "path": str(candidate_path), "simulations": simulations}
-    baseline_games = games if baseline_games is None else int(baseline_games)
+    baseline_games = 0 if baseline_games is None else int(baseline_games)
     ppo_games = games if ppo_games is None else int(ppo_games)
 
     log(f"candidate: {candidate_path} at {simulations} simulations/move")
@@ -308,10 +331,9 @@ def promote(candidate_path, games=PROMOTION_GAMES, seed=41_000,
                                    games=baseline_games, seed=seed)
         log("  " + format_result("heuristic", against_baseline))
     else:
-        # Explicitly switched off. The regression check below cannot run, and the record
-        # must not carry a stale `beat_heuristic` from the previous champion as though it
-        # were measured for this one.
-        log("skipping the heuristic rung — the overfitting tripwire is disabled")
+        # The default. The record must not carry a stale `beat_heuristic` from the previous
+        # champion as though it were measured for this one, so it is written as null.
+        log("not playing the heuristic — the gate is the champion and nothing else")
         against_baseline = None
 
     against_ppo = None
@@ -346,24 +368,17 @@ def promote(candidate_path, games=PROMOTION_GAMES, seed=41_000,
         return True, f"forced: {reason}"
 
     if not reigning_exists:
-        # The hole in the older gate, closed. A first candidate is still measured; it just
-        # has nothing of its own lineage to be measured against, so the fixed baseline is
-        # the whole test rather than a side condition.
-        if against_baseline is None:
-            return False, ("a first AlphaZero candidate has nothing of its own lineage to "
-                           "be measured against, so the heuristic rung IS the gate — it "
-                           "cannot be switched off for this promotion")
-        if not better(against_baseline):
-            low, high = against_baseline["ci"]
-            return False, (
-                f"first AlphaZero candidate, so the heuristic is the whole gate: "
-                f"{100 * against_baseline['win_rate']:.1f}% with the interval "
-                f"[{100 * low:.1f}, {100 * high:.1f}] — not shown better than the baseline"
-            )
-        _install(candidate_path, {**results, "first_of_lineage": True})
-        return True, (f"first AlphaZero champion: "
-                      f"{100 * against_baseline['win_rate']:.1f}% against the heuristic "
-                      f"(lower bound {100 * against_baseline['ci'][0]:.1f}%)")
+        # The gate is the reigning champion and nothing else, so with no reigning champion
+        # there is no gate. The old code filled the hole with the heuristic; that rung is
+        # gone, and the one thing this must not become is the silent auto-install
+        # `CLAUDE.md` records — which fires exactly when `encoder.SIZE` changed, which is
+        # exactly when nobody is watching. So it refuses, and installing the first champion
+        # of a lineage is now an explicit, recorded act.
+        return False, (
+            "there is no reigning champion to measure against, and the head-to-head rung is "
+            "the whole gate — so this would install unmeasured. Pass --force --reason with "
+            "whatever you did measure by hand; the record will say it was forced."
+        )
 
     log(f"{games} games against the reigning AlphaZero champion:")
     against_champion = compete(
@@ -377,17 +392,6 @@ def promote(candidate_path, games=PROMOTION_GAMES, seed=41_000,
         return False, (f"beat the champion {100 * against_champion['win_rate']:.1f}% but the "
                        f"interval [{100 * low:.1f}, {100 * high:.1f}] includes 50% — "
                        f"not shown better")
-
-    # And it must not have got there by learning the champion's habits. Self-play is
-    # non-transitive; without this a policy can climb the ladder while getting worse.
-    previous = record().get("beat_heuristic")
-    if previous is not None and against_baseline is not None:
-        drop = previous - against_baseline["win_rate"]
-        if drop > MAX_BASELINE_REGRESSION:
-            return False, (f"beat the champion but fell {100 * drop:.1f} points against the "
-                           f"heuristic ({100 * previous:.1f}% -> "
-                           f"{100 * against_baseline['win_rate']:.1f}%) — likely overfitted "
-                           f"to the champion rather than better at the game")
 
     _install(candidate_path, results)
     return True, (f"promoted: {100 * against_champion['win_rate']:.1f}% against the champion "
@@ -453,11 +457,11 @@ def main(argv=None):
     run.add_argument("--games", type=int, default=PROMOTION_GAMES,
                      help="the head-to-head rung, which is the one that decides")
     run.add_argument("--baseline-games", type=int, default=None, dest="baseline_games",
-                     help="games against the fixed heuristic; defaults to --games. This is "
-                          "the overfitting tripwire, not a strength check — 0 disables it")
+                     help="games against the fixed heuristic, recorded for the history and "
+                          "never a veto. Defaults to 0: the gate is the champion alone")
     run.add_argument("--ppo-games", type=int, default=None, dest="ppo_games",
-                     help="games against the PPO champion, recorded but never a veto; "
-                          "0 skips it")
+                     help="games against the PPO champion, recorded but never a veto. "
+                          "Defaults to --games, so this rung IS played unless you pass 0")
     run.add_argument("--seed", type=int, default=41_000)
     run.add_argument("--simulations", type=int, default=CHAMPION_SIMULATIONS)
     run.add_argument("--force", action="store_true",
@@ -486,9 +490,12 @@ def _name_command():
         beat = entry.get("beat_champion")
         against = entry.get("beat_heuristic")
         print(f"{label:<24} {entry.get('promoted_at', '?'):<18} "
-              # ASCII on purpose: this prints to a Windows console whose default cp1252
-              # codec cannot encode an em dash, and a listing that raises is worse than a
-              # plain one. The same reason train.py's startup banner avoids them.
+              # ASCII on purpose, though not for the reason this comment used to give:
+              # cp1252 encodes an em dash perfectly well, at 0x97. What it cannot encode is
+              # the U+FFFD that a pipe's decode makes of that byte — `chain.run`'s docstring
+              # has the round trip, and it killed a ten-hour chain once. A listing that
+              # raises is worse than a plain one. (train.py's banner avoids the *warning
+              # sign* for a different and simpler reason: cp1252 has no such character.)
               f"{('-' if beat is None else f'{100 * beat:.1f}%'):>12} "
               f"{('-' if against is None else f'{100 * against:.1f}%'):>13}"
               + ("   (forced)" if entry.get("forced") else ""))

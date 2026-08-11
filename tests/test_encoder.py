@@ -377,10 +377,46 @@ def test_a_vertex_reports_its_harbour():
                 assert hot[slot] == 1.0
 
 
-def test_pip_potential_sums_the_odds_of_the_adjacent_tiles():
+def test_pip_potential_is_retired_but_its_slot_is_still_there():
+    """The resource-blind pip total is switched off, and the column it occupied is not.
+
+    Removing the field would shift every offset after it inside a vertex row and change
+    ``SIZE``. The vertices block would have *shrunk*, which ``layouts.column_map`` refuses
+    rather than guesses, so no existing checkpoint could be grafted onto the result and the
+    reigning champion would stop loading. (``layouts.HISTORICAL`` is not the obstacle: it is
+    keyed 1868 and 1884, and a checkpoint at the current ``SIZE`` carries its own layout.) So
+    the slot stays and the value is 0. Both halves matter: the first is the compatibility
+    guarantee, the second is the change.
+    """
     state = mid_game()
     rows = E.block(E.encode(state, 1), "vertices")
-    pips_at = MAX_PLAYERS + 2 + E.HARBOUR_KINDS
+    pips_at = E.VERTEX_OFFSETS["pip_potential"]
+
+    assert not E.PIP_POTENTIAL, "this test describes the retired feature"
+    assert pips_at == MAX_PLAYERS + 2 + E.HARBOUR_KINDS, "the slot moved"
+    for vertex in range(1, T.NUM_VERTICES + 1):
+        assert rows[vertex - 1][pips_at] == 0.0
+
+
+def test_pip_potential_still_sums_the_adjacent_odds_when_switched_back_on():
+    """The arithmetic is retired, not deleted — flipping the flag restores it exactly.
+
+    Kept so that *trying* ``PIP_POTENTIAL`` again is an afternoon rather than an archaeology
+    exercise, and so a change to ``expected_production`` cannot silently break the definition
+    while the feature happens to be off. Shipping it back on is not one line: the test above
+    asserts the flag is off, so a permanent flip has to change that test too.
+    """
+    state = mid_game()
+    pips_at = E.VERTEX_OFFSETS["pip_potential"]
+
+    original = E.PIP_POTENTIAL
+    E.PIP_POTENTIAL = True
+    try:
+        state.board.__dict__.pop("_observation_template", None)   # the template is cached
+        rows = E.block(E.encode(state, 1), "vertices")
+    finally:
+        E.PIP_POTENTIAL = original
+        state.board.__dict__.pop("_observation_template", None)
 
     for vertex in range(1, T.NUM_VERTICES + 1):
         expected = sum(

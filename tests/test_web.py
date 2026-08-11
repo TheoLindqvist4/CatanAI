@@ -587,6 +587,24 @@ def test_a_missing_game_is_a_404(server):
     assert caught.value.code == 404
 
 
+def test_the_statistics_endpoint_works(server):
+    """It has to be matched before the bare game route, which would otherwise read
+    "3/stats" as the game id and answer 404."""
+    _, body, _ = request(server, "/api/game", {"seed": 3})
+    game_id = json.loads(body)["gameId"]
+
+    _, body, _ = request(server, f"/api/game/{game_id}/stats")
+    report = json.loads(body)
+    assert report["players"] and "dice" in report
+    assert [int(total) for total in report["dice"]["totals"]] == list(range(2, 13))
+
+
+def test_the_statistics_of_a_missing_game_are_a_404(server):
+    with pytest.raises(urllib.error.HTTPError) as caught:
+        request(server, "/api/game/999999/stats")
+    assert caught.value.code == 404
+
+
 def test_an_unknown_route_is_a_404(server):
     with pytest.raises(urllib.error.HTTPError) as caught:
         request(server, "/nope")
@@ -794,6 +812,48 @@ def test_the_client_is_told_the_shape_of_a_sprite():
     than as a bug, so nothing fails and nobody looks."""
     assert "art.aspects" in client_code(), "the client must be told, not guess"
     assert "art.cards" in client_code(), "the card file names must come from the server"
+
+
+def test_the_client_says_who_won_rather_than_only_hinting_it():
+    """The board goes quiet by itself when a game ends — nothing to place, no actions — so
+    without an announcement the result is one grey line in the hint bar, which is genuinely
+    easy to miss when the last move was the opponent's.
+
+    ``done`` and ``winner`` have been in the payload since the interface was built and the
+    client read neither.
+    """
+    code = client_code()
+    assert "view.done" in code, "the client must notice the game ended"
+    assert "view.winner" in code, "and which side won"
+    assert "You won!" in code and "You lost" in code
+
+
+def test_the_result_is_announced_once_per_game_not_once_per_repaint():
+    """`render` runs after every decision, so an overlay rebuilt there would restart its
+    own animation on every repaint after the game ended."""
+    code = client_code()
+    assert "celebrated" in code
+
+
+def test_a_watched_game_is_told_who_won_rather_than_congratulated():
+    """There is no "you" in a game nobody is playing."""
+    assert "view.watching" in client_code()
+
+
+def test_the_animation_can_be_turned_off_by_the_operating_system():
+    """Nobody should be made motion-sick by a scoreboard. The result still appears and
+    still says who won; only the movement goes."""
+    css = (pathlib.Path(__file__).resolve().parents[1]
+           / "interfaces" / "web" / "static" / "app.css").read_text(encoding="utf-8")
+    assert "prefers-reduced-motion" in css
+
+
+def test_the_client_asks_for_the_statistics_only_when_they_are_wanted():
+    """Its own request, made on a click. Folding the report into `view` would compute it
+    four times a turn for a panel nobody has opened."""
+    code = client_code()
+    assert "/stats" in code
+    assert "openStats" in code
 
 
 def test_the_client_has_no_stray_control_characters():

@@ -1,16 +1,17 @@
 {
-  "name": "gen4-ashen-wheat",
-  "generation": 4,
-  "fingerprint": "871a227b21dfcbe1",
-  "promoted_at": "2026-08-05 21:23",
+  "name": "gen6-gilded-beacon",
+  "generation": 6,
+  "fingerprint": "05d71cd94de2244c",
+  "promoted_at": "2026-08-06 21:34",
   "lineage": "alphazero",
-  "source": "checkpoints/az_v2/latest.pt",
+  "source": "checkpoints\\az_day_1\\snapshots\\iter_0200.pt",
   "observation": 2503,
   "actions": 325,
-  "beat_heuristic": 0.9273182957393483,
-  "beat_ppo_champion": 0.93,
-  "beat_champion": 0.71,
+  "beat_heuristic": null,
+  "beat_ppo_champion": null,
+  "beat_champion": 0.5525,
   "games": 400,
+  "baseline_games": 0,
   "simulations": 64,
   "history": [
     {
@@ -52,6 +53,37 @@
       "forced": true,
       "forced_reason": "80.6% against the fixed heuristic against the reigning champion's 74.4% (two-proportion z=2.10, p=0.036), 77.6% against the PPO champion against 76.1%, and 51.8% [46.8, 56.8] head to head \u2014 better on every rung, significantly better on the fixed yardstick, never worse. The head-to-head rung is a weak discriminator here because the candidate is the champion's direct descendant, warm-started from it.",
       "note": "re-measured at 64 simulations after raising CHAMPION_SIMULATIONS from 32; the weights are unchanged, the numbers belong to the new budget"
+    },
+    {
+      "name": "gen4-ashen-wheat",
+      "generation": 4,
+      "fingerprint": "871a227b21dfcbe1",
+      "promoted_at": "2026-08-05 21:23",
+      "lineage": "alphazero",
+      "source": "checkpoints/az_v2/latest.pt",
+      "observation": 2503,
+      "actions": 325,
+      "beat_heuristic": 0.9273182957393483,
+      "beat_ppo_champion": 0.93,
+      "beat_champion": 0.71,
+      "games": 400,
+      "simulations": 64
+    },
+    {
+      "name": "gen5-lucky-ferry",
+      "generation": 5,
+      "fingerprint": "4a656eb2e74d5553",
+      "promoted_at": "2026-08-06 16:51",
+      "lineage": "alphazero",
+      "source": "checkpoints/az_setup_1/snapshots/iter_0176.pt",
+      "observation": 2503,
+      "actions": 325,
+      "beat_heuristic": null,
+      "beat_ppo_champion": null,
+      "beat_champion": 0.5939849624060151,
+      "games": 400,
+      "baseline_games": 0,
+      "simulations": 64
     }
   ]
 }

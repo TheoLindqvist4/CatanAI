@@ -38,6 +38,10 @@ const state = {
   mode: null,        // which board action type is armed
   busy: false,
   epoch: 0,          // bumped by a new game, so a running watch knows it is stale
+  // The game whose result has already been announced. `render` runs after every single
+  // decision, so without this the overlay would be rebuilt — and replay its animation —
+  // on every repaint after the game ended.
+  celebrated: null,
 };
 
 /** Asset file name for a player's pieces, e.g. 1 -> "red". */
@@ -181,6 +185,9 @@ async function newGame() {
     state.view = view;
     state.gameId = view.gameId;
     state.mode = null;
+    state.celebrated = null;
+    closeOverlay("result");
+    closeOverlay("stats-modal");
     render();
     await watchOpponent();
   } finally {
@@ -270,6 +277,13 @@ function render() {
   drawPanel();
   drawLog();
   setHint(view.phaseHint);
+
+  // Last, so the board underneath is already the final position when the result lands on
+  // top of it.
+  if (view.done && state.celebrated !== view.gameId) {
+    state.celebrated = view.gameId;
+    showResult(view);
+  }
 }
 
 function drawBoard() {
@@ -603,6 +617,349 @@ function setHint(text) {
   document.getElementById("hint").textContent = text;
 }
 
+/* -------------------------------------------------------------- overlays */
+
+function openOverlay(id, html) {
+  const holder = document.getElementById(id);
+  holder.innerHTML = html;
+  holder.hidden = false;
+  holder.setAttribute("role", "dialog");
+  holder.setAttribute("aria-modal", "true");
+  // Clicking the dimmed area behind the sheet closes it, which is what everyone tries
+  // first. Clicks inside the sheet must not, so this only fires on the backdrop itself.
+  holder.onclick = (event) => { if (event.target === holder) closeOverlay(id); };
+  for (const button of holder.querySelectorAll("[data-close]")) {
+    button.addEventListener("click", () => closeOverlay(id));
+  }
+  // So Escape and Enter land somewhere sensible rather than on whatever was focused
+  // before the game ended.
+  const first = holder.querySelector("button");
+  if (first) first.focus();
+}
+
+function closeOverlay(id) {
+  const holder = document.getElementById(id);
+  holder.hidden = true;
+  holder.innerHTML = "";
+}
+
+/* ---------------------------------------------------------- the result */
+
+/** Announce the end of the game.
+ *
+ * The board goes quiet by itself when a game ends — nothing left to place, no actions
+ * offered — so without this the result is one grey line in the hint bar and it is genuinely
+ * easy to miss that you have won.
+ *
+ * Purely a matter of the interface. Training never loads this file, and the server is not
+ * asked for anything extra: `done`, `winner` and both final scores are already in the view
+ * that drew the last move.
+ */
+function showResult(view) {
+  const you = view.players.find((player) => player.you);
+  const them = view.players.find((player) => !player.you);
+
+  // There is no "you" in a game nobody is playing, so a watched game is told who won
+  // rather than congratulated.
+  let outcome;
+  let heading;
+  let badge;
+  if (view.winner === null) {
+    outcome = "neutral";
+    heading = "No winner";
+    badge = "◇";
+  } else if (view.watching) {
+    outcome = "neutral";
+    heading = `${view.winner === view.you ? view.watchedBy : view.opponent} wins`;
+    badge = "◆";
+  } else if (view.winner === view.you) {
+    outcome = "won";
+    heading = "You won!";
+    badge = "🏆";
+  } else {
+    outcome = "lost";
+    heading = "You lost";
+    badge = "🛡";
+  }
+
+  const side = (player, name) => `
+    <div class="score-side" style="border-top-color: ${PLAYER_COLOURS[player.id]}">
+      <div class="who">${name}</div>
+      <div class="points">${player.victoryPoints}</div>
+    </div>`;
+
+  const names = view.watching
+    ? { you: view.watchedBy, them: view.opponent }
+    : { you: "You", them: "Opponent" };
+
+  // The confetti is a sibling of the sheet, not a child: it falls the height of the
+  // window, and the sheet is a scroll box that would otherwise be its containing block.
+  openOverlay("result", `
+    ${outcome === "won" ? confetti() : ""}
+    <div class="sheet result ${outcome}">
+      <span class="result-badge">${badge}</span>
+      <h2>${heading}</h2>
+      <div class="result-sub">${view.turn} turns · first to ${view.victoryTarget}</div>
+      <div class="result-score">
+        ${side(you, names.you)}
+        <span class="score-dash">–</span>
+        ${side(them, names.them)}
+      </div>
+      <div class="result-actions">
+        <button data-stats>Game stats</button>
+        <button class="primary" data-new-game>New game</button>
+        <button data-close>Close</button>
+      </div>
+    </div>
+  `);
+
+  const holder = document.getElementById("result");
+  holder.querySelector("[data-stats]")
+    .addEventListener("click", () => openStats().catch(report));
+  holder.querySelector("[data-new-game]").addEventListener("click", () => {
+    closeOverlay("result");
+    newGame().catch(report);
+  });
+}
+
+/** Decoration, and nothing else: hidden from assistive technology and inert to the mouse.
+ *
+ * Each piece gets its own column, delay, duration and colour, because forty identical
+ * pieces falling in step reads as a loading bar rather than as a celebration. */
+function confetti(pieces = 40) {
+  const colours = ["#d8b44a", "#4aa564", "#3b6fd4", "#d64545", "#e8e8ea"];
+  const spans = [];
+  for (let i = 0; i < pieces; i += 1) {
+    const left = Math.random() * 100;
+    const delay = Math.random() * 1.6;
+    const duration = 2.4 + Math.random() * 1.8;
+    const colour = colours[i % colours.length];
+    spans.push(
+      `<i style="left:${left.toFixed(2)}%;background:${colour};` +
+      `animation-delay:${delay.toFixed(2)}s;animation-duration:${duration.toFixed(2)}s"></i>`);
+  }
+  return `<div class="confetti" aria-hidden="true">${spans.join("")}</div>`;
+}
+
+/* ------------------------------------------------------- the statistics */
+
+/** Fetch and draw the whole game in numbers.
+ *
+ * Its own request rather than another block on the view: it is asked for by a click and not
+ * four times a turn, so nothing here is on the path of a move.
+ */
+async function openStats() {
+  if (!state.gameId) return;
+  // The same guard every other request carries: New game is pressable at any moment, and a
+  // report that lands afterwards belongs to a game that is no longer on the board.
+  const epoch = state.epoch;
+  const report = await getJSON(`/api/game/${state.gameId}/stats`);
+  if (state.epoch !== epoch) return;
+  openOverlay("stats-modal", `
+    <div class="sheet stats-sheet">
+      <div class="sheet-head">
+        <div>
+          <h2>Game statistics</h2>
+          <div class="muted">${report.turns} turns · ${report.rolls} rolls</div>
+        </div>
+        <button class="close" data-close title="Close">✕</button>
+      </div>
+      <div class="sheet-body">
+        ${diceSection(report)}
+        ${playerSection(report)}
+        ${pointsSection(report)}
+      </div>
+    </div>
+  `);
+}
+
+/** How often each total has come up, and who rolled it.
+ *
+ * One row per total from 2 to 12, always — a number that never came up keeps its row,
+ * because a gap in the middle of a histogram reads as missing data rather than as never.
+ *
+ * The reference tick is what a fair deck of 36 would have given over the same number of
+ * rolls. Without it a bar chart of dice says only "6 came up a lot", which is what 6 is
+ * supposed to do.
+ */
+function diceSection(report) {
+  const totals = report.dice.totals;
+  const expected = report.dice.expected;
+  const byPlayer = report.dice.byPlayer;
+  const ids = report.players.map((player) => player.id);
+
+  // Scaled to whichever is longer, so the reference tick is never off the end of the track.
+  const scale = Math.max(
+    1,
+    ...Object.values(totals),
+    ...Object.values(expected)) * 1.02;
+
+  const rows = Object.keys(totals).map((total) => {
+    const count = totals[total];
+    const segments = ids
+      .filter((id) => byPlayer[id][total] > 0)
+      .map((id) => `<span class="seg" style="width:${(byPlayer[id][total] / scale) * 100}%;` +
+                   `background:${PLAYER_COLOURS[id]}"></span>`)
+      .join("");
+
+    // The whole row in one hover: the split between the players is the part a colour alone
+    // would be carrying, so it is said in words here as well.
+    const split = report.players
+      .map((player) => `${player.name} ${byPlayer[player.id][total]}`)
+      .join(", ");
+
+    return `
+      <div class="dice-row${Number(total) === 7 ? " seven" : ""}">
+        <span class="total">${total}</span>
+        <span class="dice-track"
+              title="${total}: rolled ${count} (${split}) · expected about ${expected[total]}">
+          <span class="dice-bar">${segments}</span>
+          <span class="dice-expected" style="left:${(expected[total] / scale) * 100}%"></span>
+        </span>
+        <span class="count">${count}</span>
+      </div>`;
+  }).join("");
+
+  const keys = report.players
+    .map((player) => `<span><i style="background:${PLAYER_COLOURS[player.id]}"></i>` +
+                     `${player.name} rolled</span>`)
+    .join("");
+
+  return `
+    <section class="stats-section">
+      <h3>Dice distribution</h3>
+      <div class="legend">
+        ${keys}
+        <span><i class="expected"></i>expected over ${report.rolls} rolls</span>
+      </div>
+      <div class="dice-chart">${rows}</div>
+      <div class="points-note">
+        ${report.dice.balanced
+          ? "This ruleset deals a shuffled deck of all 36 dice pairs, so the totals track the expectation closely by design."
+          : "Plain dice: each roll is independent, so a run away from the expectation is luck rather than a bug."}
+      </div>
+    </section>`;
+}
+
+function playerSection(report) {
+  return `
+    <section class="stats-section">
+      <h3>Per player</h3>
+      <div class="stat-columns">
+        ${report.players.map(playerStats).join("")}
+      </div>
+    </section>`;
+}
+
+/** A row of resource cards with a count on each, the way a hand reads everywhere else. */
+function resourceRow(amounts) {
+  const cards = Object.entries(amounts)
+    .map(([name, count]) =>
+      `<span class="res-count${count ? "" : " zero"}" title="${name}: ${count}">` +
+      `${resourceCard(name, CARD_HEIGHT.inline)}${count}</span>`)
+    .join("");
+  return `<div class="res-row">${cards}</div>`;
+}
+
+function statRow(label, value, title) {
+  return `<div class="stat-row"${title ? ` title="${title}"` : ""}>` +
+         `<span>${label}</span><b>${value}</b></div>`;
+}
+
+function playerStats(entry) {
+  const cards = (n) => `${n} card${n === 1 ? "" : "s"}`;
+  return `
+    <div class="stat-card" style="border-left-color:${PLAYER_COLOURS[entry.id]}">
+      <h4>${entry.name}</h4>
+
+      ${statRow("Rolls made", entry.rolled)}
+      ${statRow("7s rolled", entry.sevensRolled,
+                "Sevens this player rolled themselves")}
+      ${statRow("Knights played", entry.knights)}
+      ${statRow("Robber moved", entry.robberMoves,
+                "From a 7 or from playing a Knight")}
+
+      <div class="stat-group">
+        <h5>Caught by a 7</h5>
+        ${statRow("Times over the limit", entry.sevenOuts,
+                  "How many separate 7s cost them cards")}
+        ${statRow("Cards discarded", cards(entry.cardsDiscarded))}
+        ${entry.cardsDiscarded ? resourceRow(entry.discarded) : ""}
+      </div>
+
+      <div class="stat-group">
+        <h5>Blocked by the robber</h5>
+        ${statRow("Production denied", cards(entry.blockedTotal),
+                  "Cards the tile under the robber would have paid them")}
+        ${entry.blockedTotal ? resourceRow(entry.blocked) : ""}
+      </div>
+
+      <div class="stat-group">
+        <h5>Cards produced (${entry.producedTotal})</h5>
+        ${resourceRow(entry.produced)}
+      </div>
+
+      <div class="stat-group">
+        <h5>Other movements</h5>
+        ${statRow("Stolen by them", cards(sum(entry.stolenBy)))}
+        ${statRow("Stolen from them", cards(sum(entry.stolenFrom)))}
+        ${statRow("Taken by monopoly", cards(sum(entry.monopolised)))}
+        ${statRow("Development cards bought", entry.devBought)}
+        ${statRow("Cards spent building", cards(sum(entry.spent)))}
+      </div>
+    </div>`;
+}
+
+const sum = (amounts) => Object.values(amounts).reduce((a, b) => a + b, 0);
+
+/** Where every point came from, per player.
+ *
+ * The question a losing scoreboard actually raises: 15–3 says nothing about whether the
+ * game was lost to cities or to a road nobody contested.
+ */
+function pointsSection(report) {
+  const sources = ["settlements", "cities", "longest road", "largest army",
+                   "victory point cards"];
+  const rowFor = (name) => {
+    const cells = report.players.map((player) => {
+      const found = player.pointSources.find((row) => row.source === name);
+      if (!found) return `<td class="num zero" title="hidden until the game ends">?</td>`;
+      const detail = found.count && found.count !== found.points
+        ? ` <span class="muted">(${found.count})</span>` : "";
+      const held = found.held ? " held" : "";
+      return `<td class="num${found.points ? held : " zero"}">${found.points}${detail}</td>`;
+    }).join("");
+    return `<tr><td class="source">${name}</td>${cells}</tr>`;
+  };
+
+  const totals = report.players
+    .map((player) => `<td class="num">${player.victoryPoints}` +
+                     `${player.victoryPointsComplete ? "" : "+"}</td>`)
+    .join("");
+
+  const incomplete = report.players.some((player) => !player.victoryPointsComplete);
+
+  return `
+    <section class="stats-section">
+      <h3>Where the points came from</h3>
+      <table class="points-table">
+        <thead>
+          <tr>
+            <th>Source</th>
+            ${report.players.map((player) => `<th class="num">${player.name}</th>`).join("")}
+          </tr>
+        </thead>
+        <tbody>
+          ${sources.map(rowFor).join("")}
+          <tr class="total"><td>Total</td>${totals}</tr>
+        </tbody>
+      </table>
+      ${incomplete ? `<div class="points-note">A Victory Point card is held rather than
+        played, so it stays hidden until the game ends — the totals marked
+        <b>+</b> are the public score and may be short.</div>` : ""}
+    </section>`;
+}
+
 /* ------------------------------------------------------------------ boot */
 
 const report = (error) => setHint(`⚠ ${error.message}`);
@@ -655,6 +1012,14 @@ async function start() {
   // a rejected promise the click handler would drop on the floor.
   document.getElementById("new-game")
     .addEventListener("click", () => newGame().catch(report));
+  document.getElementById("stats")
+    .addEventListener("click", () => openStats().catch(report));
+  // Escape closes whichever overlay is open, because every other dialog on the web does.
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    closeOverlay("stats-modal");
+    closeOverlay("result");
+  });
   await newGame();
 }
 

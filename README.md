@@ -11,7 +11,7 @@ lives in exactly one place — so an agent and a human are always playing the sa
 python -m interfaces.web        # then open http://127.0.0.1:8000
 ```
 
-![Board](Images/Catan_tile_positions.png)
+![Board](Images/Catan_board.png)
 
 ---
 
@@ -20,12 +20,12 @@ python -m interfaces.web        # then open http://127.0.0.1:8000
 | | |
 |---|---|
 | **A complete Catan implementation** | Ranked 1v1 rules by default: 15 points, hand limit 9, Friendly Robber, Balanced Dice |
-| **A playable web interface** | Click the board to build. Painted artwork, resources as cards, full game log |
+| **A playable web interface** | Click the board to build. Painted artwork, resources as cards, full game log, and a statistics panel that says where the game went |
 | **A hand-written opponent** | Positional judgement from marginal value — beats a naive greedy agent 96.7% |
-| **Two trained opponents** | PPO self-play, and AlphaZero self-play with search — the latter wins **74.7%** against the heuristic and **76.5%** against the former |
+| **Two trained opponents** | PPO self-play, and AlphaZero self-play with search. The AlphaZero lineage is six champions deep; the reigning one took the place at **55.25%** over 400 games against the one before it |
 | **Search that cannot cheat** | MCTS over a resampled information set — hidden cards are redrawn from public facts before the tree is built |
 | **The machinery to improve it** | 2,503-float observation, 325 discrete actions, parallel self-play, a promotion gate per lineage |
-| **854 tests** | Including leak detectors that prove no agent — and no search — can see hidden information |
+| **935 tests** | Including leak detectors that prove no agent — and no search — can see hidden information |
 
 ## Quick start
 
@@ -93,7 +93,7 @@ reasoning survives — including the things that did not work.
 | `greedy` | Sensible build order, random placement |
 | `random` | Uniform over legal moves |
 | `learned` | The PPO champion, when one is installed |
-| `alphazero` | The AlphaZero champion — the same network, plus 32 simulations of search per move. 74.7% against `hard` |
+| `alphazero` | The AlphaZero champion — the same network, plus 64 simulations of search per move, and 400 at an opening settlement. `gen6-gilded-beacon` today |
 
 The heuristic's central idea is **marginal value**: a settlement is worth what its tiles add
 to what you already produce, not the sum of its pips. A third wheat is worth far less than a
@@ -135,7 +135,12 @@ python -m training.champion promote checkpoints/best.pt   # only if measurably b
 python -m benchmark.benchmark                             # measure before optimising
 python -u -m training.alphazero.train --hours 3           # self-play, search, learn
 python -m training.alphazero.champion promote checkpoints/alphazero/best.pt
+python -m training.alphazero.chain --until "09:00"        # or all three, overnight
 ```
+
+`chain` is the same three steps in a loop with a deadline: train a stage, rank its snapshots
+*with search*, and offer the best one to the gate. Every stage keeps its own directory and
+nothing is deleted, because a losing checkpoint is still a rung somebody can start from.
 
 Search over a game with hidden information needs a state you can roll forward *without
 reading what the opponent holds*, and `clone()` copies the development deck, the dice deck and
@@ -170,17 +175,36 @@ models/champion_az.pt   the AlphaZero champion.  Changes only by promotion. In g
 The interfaces read `models/` and never `checkpoints/`, so a run in progress cannot disturb a
 game in progress — which is the point: you can train in one window and play in another.
 Promotion is earned: a candidate plays 400 games against the reigning champion and is refused
-unless the Wilson lower bound clears 50%. It is also checked against the fixed heuristic, so a
-policy that beat the champion by learning its habits while getting worse at the game is
-rejected — self-play is non-transitive and that is where it shows.
+unless the Wilson lower bound clears 50%.
+
+**The two lineages gate differently, and on purpose.** The PPO gate in `training/champion.py`
+also plays the fixed heuristic and refuses a candidate that dropped more than 5 points against
+it — self-play is non-transitive, so a policy can beat the champion by learning its habits
+while getting worse at the game, and a fixed external opponent is the only thing that notices.
+The AlphaZero gate in `training/alphazero/champion.py` had that rung and **it was removed**:
+one rung decides, the reigning champion, and nothing else, so that "promoted" means exactly
+one measurable thing. Removed from the *decision*, not from the record, and the two rungs
+differ in what they cost. The heuristic is played only when `--baseline-games` asks for it.
+The PPO champion is played **by default** — `--ppo-games` falls back to the head-to-head
+game count — so a bare `promote` plays two 400-game matches whenever a PPO champion loads,
+and only the first of them can refuse. `chain.py` passes `--ppo-games 0` explicitly, which
+is why an overnight run plays one match and nothing else; that is the chain's choice, not
+the gate's default.
+`tests/test_alphazero.py::test_the_heuristic_cannot_veto_a_candidate_that_beat_the_champion`
+holds it there, so putting the rung back is a decision rather than a drift
+([decision 0030](docs/decisions/0030-one-rung.md)).
 
 This is not theoretical. The gate has already refused a finished training run that scored
 48.2% against the champion.
 
-The AlphaZero gate adds two things. Its ladder includes the *PPO champion*, so the two
-lineages actually meet and "which should the interface offer" has an answer. And its **first**
-promotion is gated too: the older gate installs without a match when no champion loads, which
-fires exactly when the encoder has changed and nobody is watching.
+**The first promotion of a lineage is refused, not waved through.** With one rung there is
+nothing for a first candidate to be measured against, so the AlphaZero gate stops rather than
+installing something unmeasured — which is what the PPO gate still does when no champion
+loads, and it fires exactly when `encoder.SIZE` has changed and nobody is watching. Installing
+the first champion of a lineage is an explicit `--force --reason`; the head-to-head is still
+played when there is anything to play it against, and the record carries `"forced": true` with
+the stated reason forever, so a promotion that skipped the gate can never be mistaken for one
+that passed it.
 
 ### Recorded games
 
@@ -217,7 +241,8 @@ catan/                 the engine — no dependencies
 interfaces/            the only parts that display anything
   render.py              board -> PNG
   cli.py                 play or watch in a terminal
-  web/                   the browser game, the recorder, a stdlib HTTP server
+  web/                   the browser game, the recorder, the statistics panel, a stdlib
+                         HTTP server
 
 training/              the only package that imports PyTorch
   net.py structured_net.py    the policy/value networks
@@ -233,13 +258,15 @@ training/              the only package that imports PyTorch
     report.py                   what a run did, read back from metrics.jsonl
     agent.py champion.py        what you play against, and its gate
     arena.py                    head-to-head matches across processes
+    chain.py                    train, rank, promote, repeat, until a deadline
+    distil.py                   changing the network's shape without starting over
     layouts.py network.py       carrying a checkpoint across an observation change
     study.py dashboard.py       what openings win, and a page showing a run
 
 benchmark/             games/sec, ms/game, and where the time goes
-configs/train.yaml     the run's settings
+configs/               train.yaml, train_v2.yaml — a run's settings
 
-docs/decisions/        24 records of why things are the way they are
+docs/decisions/        30 records of why things are the way they are
 ```
 
 ---
@@ -265,6 +292,17 @@ Each cost real time to discover, and all are written up in `docs/decisions/`.
   pattern that matches nothing while reading as though it should work.
 - **1-ply lookahead does not help.** Leak-safe and correct, and 53.4% against 52.2% over 800
   games. Recorded because an unwritten negative result gets re-attempted.
+- **Budget does not buy breadth.** An opening settlement offers 54 legal spots and PUCT is
+  tuned for a normal turn's six: at the settings the agent plays at, 64 simulations examine a
+  median 3 of the 54, and 25x the budget takes that to a median 7 (40 boards, 24 at 1,600
+  simulations). Giving every spot a floor of 4 visits reaches all 54 on 40 of 40 boards, and
+  costs slightly *less* than plain PUCT — 0.319 s against 0.335 s at 400 simulations — because
+  the forced sweep builds a shallower tree.
+- **A feature the agent had learned perfectly still had to go.** `pip potential` sums a
+  vertex's odds and throws the resources away, so three sheep and an even spread are the same
+  number. The champion placed 0.005 pips off the best available spot — and openings covering
+  five resources win where three-resource ones do not, [81.9, 98.5] against [45.8, 70.4],
+  which is the one distinction the feature cannot make. It now writes 0.0.
 
 ---
 
@@ -272,29 +310,43 @@ Each cost real time to discover, and all are written up in `docs/decisions/`.
 
 The engine and both interfaces are complete and tested.
 
-The heuristic recently got substantially stronger — 70.7% against its previous self over 800
-games — and that moved the yardstick. The champion, trained against the *old* heuristic, now
-scores **55.0% against the new one** with the interval [49.3, 60.5] straddling 50%: it is no
-longer clearly ahead of the hand-written opponent it used to beat comfortably. A retrain from
-the improved teacher is under way, and the promotion gate decides whether it replaces the
-champion.
+The strongest player is the AlphaZero champion, `gen6-gilded-beacon`, promoted 2026-08-06:
+**55.25%** over 400 games against the champion before it, interval [50.35, 60.05]. That is the
+only figure its record carries. The gate is the reigning champion and nothing else, so the
+heuristic was not played at all, and this file will not guess what it would have said — the
+last champion measured there is two promotions old (`gen4-ashen-wheat`, 92.7% over 400 games
+at 64 simulations, in its promotion record). The paired comparison against the champion it
+replaced is a different, smaller match: 92.00% [88.4, 94.6] against 80.13% [75.2, 84.3] over
+300 games on identical games
+([decision 0026](docs/decisions/0026-why-the-run-stopped-learning.md)).
 
-The lesson worth carrying: **win rates recorded against the heuristic before and after that
-change are not comparable.** Any claim of the form "the bot reached X%" has to say which
-baseline it was measured against.
+Two lessons worth carrying, both learned here the expensive way. **A win rate against the
+heuristic is only comparable within one version of the rules**: `models/champion.json` records
+71.6%, and the same weights re-measured at 49.3% over 150 games, [41.4, 57.3], because a
+commit restricted pre-roll development-card plays after that promotion. And **the champion is
+not the newest model** — it changes only through the gate, which has already refused a
+finished run.
 
-What is known to be missing, in order of expected value:
+What is known to be missing:
 
-1. **Which numbers a vertex touches.** The observation gives an aggregate "pip potential", so
-   "an 8 on ore" is blended with the two tiles beside it.
-2. **Roads have one step of lookahead**, no plan. There is no notion of a route.
-3. **Belief sampling.** Every remaining search idea needs it.
+1. **Roads have one step of lookahead**, no plan. There is no notion of a route.
+2. **Adjacency, for the flat network.** It has to infer that vertex 23 neighbours 24 from
+   correlations, though `topology.py` knows. The structured network answers this by sharing
+   weights across positions rather than by adding a feature, which is why it is the default.
+3. **Any estimate of what the opponent holds.** Deliberate: a robber steal moves a card only
+   the two players involved ever see, so a running total would be either wrong or a leak. The
+   `history` block's cumulative production and spending bounds it, and deriving the bound is
+   left to the network.
 
-Build costs used to head that list — the observation said nothing about what a road cost, and
-affordability was inferred only from which actions happened to be legal. The `affordability`
-block now encodes how far the hand is from each purchase and what closing the gap would cost
-at the bank, which is the part that actually varies
-([decision 0022](docs/decisions/0022-affordability-features.md)).
+Three items have left that list, which is why it is no longer ranked. Build costs: the
+observation said nothing about what a road cost, and the `affordability` block now encodes how
+far the hand is from each purchase and what closing the gap would cost at the bank
+([0022](docs/decisions/0022-affordability-features.md)). Which numbers a vertex touches: a
+vertex carries its expected cards *per resource* and how near the closest harbour of each kind
+is ([0024](docs/decisions/0024-what-a-placement-can-see.md)), and the resource-blind aggregate
+that used to stand in for it now writes 0.0
+([0029](docs/decisions/0029-retiring-pip-potential.md)). And belief sampling, which every
+search idea needed, is `training/alphazero/determinize.py`.
 
 See [`ROADMAP.md`](ROADMAP.md) for the phase history, [`CLAUDE.md`](CLAUDE.md) for working
 notes, and [`docs/`](docs/) for the decision records.
@@ -302,5 +354,5 @@ notes, and [`docs/`](docs/) for the decision records.
 ## Tests
 
 ```sh
-python -m pytest tests -q       # 753 tests, about 90 seconds
+python -m pytest tests -q       # 935 tests, about six minutes
 ```

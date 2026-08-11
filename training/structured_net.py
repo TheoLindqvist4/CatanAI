@@ -2,7 +2,7 @@
 
 The flat :class:`~training.net.PolicyValueNet` treats the observation as an unordered bag of
 numbers. It is not one. ``catan.encoder`` lays it out as regular blocks — 19 tiles x 19,
-54 vertices x 16, 72 roads x 6, then the un-positional remainder — and
+54 vertices x 27, 72 roads x 6, then the un-positional remainder — and
 ``catan.action_space`` lays the actions out the same way: 275 of them (84.6%) name a board
 element.
 
@@ -20,10 +20,12 @@ applied to vertex 23's own embedding, not a column of a 512x324 dense layer. The
 two weights per output rather than 512, and they are the *same* weights for all 54 vertices,
 so a vertex that was never built on in training still gets a sensibly ranked logit.
 
-**Neighbourhood information, bought cheaply.** The encoder tells a vertex its pip potential
-but never which *resources* it touches, nor whether the robber sits on one of its tiles; it
-tells a road who owns it but nothing about its endpoints. Those are one hop away in
-``catan.topology``.
+**Neighbourhood information, bought cheaply.** What a vertex knows about its own tiles has
+moved twice since this was written: record 0024 gave it the expected cards it makes of *each*
+resource, and record 0029 retired the resource-blind pip total that used to be the only
+placement signal there was. What a vertex still does not know is whether the robber is sitting
+on one of its tiles, or anything at all about the corners next to it; a road knows who owns it
+and nothing about its endpoints. Those are one hop away in ``catan.topology``.
 
 The obvious way to fetch them — gather each entity's neighbours' *embeddings* and pool
 them — was built and measured first, and it is far too slow: one gather-and-sum of the

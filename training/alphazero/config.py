@@ -80,6 +80,22 @@ DEFAULTS = {
     "playout_cap_probability": 0.25,   # chance a move gets the full budget and is recorded
     "playout_cap_fast": 24,            # simulations for the moves that are not recorded
 
+    # --- the opening, which the cap and PUCT both handle badly ------------------------ #
+    # An opening settlement is 54 legal moves against a normal turn's six, and a player's two
+    # placements are seven plies apart, so this is where the *pair* is decided. Measured:
+    # setup is 4.6% of searchable decisions and the cap recorded a quarter of them, so about
+    # one placement per game reached the buffer. Setup is now always recorded (see self_play),
+    # and these two settings are what make the extra rows worth having. What PUCT reaches at
+    # this root on its own, and what the floor changes, is measured once in Search's
+    # `root_min_visits` docstring and argued in
+    # docs/decisions/0028-the-opening-is-fifty-four-moves-wide.md.
+    "setup_simulations": 400,          # at a settlement only; the road has three options
+    "setup_root_min_visits": 4,        # visits every spot gets before PUCT may concentrate.
+                                       # 4 x 54 = 216 of the 400, which fits with room over;
+                                       # 8 x 54 = 432 does not, and degenerates silently.
+                                       # The sweep is stripped from the target by
+                                       # _discretionary_counts. 0 restores plain PUCT.
+
     # --- replay ---------------------------------------------------------------------- #
     "replay_buffer_size": 180_000,  # guide: 2,000,000. The observation is 2,503 floats,
                                     # so this is ~0.9 GB in float16; see replay_buffer.

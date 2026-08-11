@@ -18,9 +18,11 @@ guide assumes perfect information. **Search must not see what the player may not
 encoder and the heuristic are held to, using the same scrambler.
 """
 
+import collections
 import io
 import json
 import random
+import sys
 from contextlib import redirect_stdout
 
 import numpy as np
@@ -820,11 +822,14 @@ def test_champion_name_survives_a_console_that_cannot_encode_it():
     az.champion_name(9, "0" * 64).encode("cp1252")
 
 
-def test_first_promotion_is_gated(tmp_path, monkeypatch):
+def test_first_promotion_is_refused_rather_than_waved_through(tmp_path, monkeypatch):
     """The hole in the older gate must not be reproduced here.
 
     ``CLAUDE.md`` records ``training.champion.promote`` installing without a match whenever
-    no champion loads. A first AlphaZero candidate still has to beat the heuristic.
+    no champion loads — and it fires exactly when ``encoder.SIZE`` changed, which is exactly
+    when nobody is watching. The heuristic rung used to plug that hole. It is gone, so with
+    no reigning champion there is no gate at all, and the only safe answer is to refuse:
+    installing the first champion of a lineage is now an explicit ``--force --reason``.
     """
     from training.alphazero import champion as az
 
@@ -848,15 +853,27 @@ def test_first_promotion_is_gated(tmp_path, monkeypatch):
     promoted, reason = az.promote(candidate, games=100, log=lambda *_: None)
 
     assert not promoted, "an untrained network must not become the champion"
-    assert "not shown better" in reason
-    assert played, "the first candidate must actually be played, not waved through"
-    assert played[0] == ("mcts", "heuristic"), "the fixed baseline is the first-run gate"
+    assert "no reigning champion" in reason
     assert not (tmp_path / "champion_az.pt").exists()
 
+    # And the escape hatch works, and says so in the record.
+    promoted, reason = az.promote(candidate, games=100, force=True,
+                                  reason="measured 61% by hand", log=lambda *_: None)
+    assert promoted and "forced" in reason
+    assert json.loads((tmp_path / "champion_az.json").read_text())["forced"] is True
 
-def test_promotion_refuses_a_candidate_that_only_beats_the_champion(tmp_path, monkeypatch):
-    """Beating the champion is necessary and not sufficient: a policy can climb the ladder
-    by learning the champion's habits while getting worse at the game."""
+
+def test_the_heuristic_cannot_veto_a_candidate_that_beat_the_champion(tmp_path, monkeypatch):
+    """Beating the champion is the whole gate, deliberately.
+
+    This test used to assert the opposite — that collapsing against the fixed heuristic
+    refused a candidate that had beaten the champion. The tripwire was removed on purpose so
+    that "promoted" means exactly one measurable thing. The argument for it has not stopped
+    being true (self-play is non-transitive, so a candidate can climb by learning the
+    champion's habits while getting worse at the game), which is why it is written down here:
+    if this behaviour is ever reverted, it should be because someone decided to, not because
+    the check quietly came back.
+    """
     from training.alphazero import champion as az
 
     net = new_network()
@@ -880,10 +897,20 @@ def test_promotion_refuses_a_candidate_that_only_beats_the_champion(tmp_path, mo
                 "win_rate": 0.70, "ci": (0.60, 0.78), "ci_width": 0.18}
 
     monkeypatch.setattr("training.alphazero.arena.compete", results)
-    promoted, reason = az.promote(candidate, games=100, log=lambda *_: None)
+    promoted, reason = az.promote(candidate, games=100, baseline_games=100,
+                                  log=lambda *_: None)
 
-    assert not promoted
-    assert "overfitted to the champion" in reason
+    assert promoted, "the heuristic is recorded, not consulted"
+    assert "70.0% against the champion" in reason
+    written = json.loads((tmp_path / "champion_az.json").read_text())
+    assert written["beat_heuristic"] == 0.40, "asked for, so it must still be recorded"
+
+    # And by default it is not even played.
+    played = []
+    monkeypatch.setattr("training.alphazero.arena.compete",
+                        lambda a, b, **kw: played.append(b["kind"]) or results(a, b, **kw))
+    az.promote(candidate, games=100, log=lambda *_: None)
+    assert "heuristic" not in played, "the default gate must not spend games on the yardstick"
 
 
 @pytest.mark.slow
@@ -1445,3 +1472,150 @@ def test_the_search_still_reaches_the_same_positions_through_a_chance_node():
             assert total == sum(node.state.dice_deck[-1])
 
     assert seen > 0, "no search built a chance node, so this proved nothing"
+
+
+# ---------------------------------------------------------------------------------------- #
+# The overnight chain                                                                        #
+# ---------------------------------------------------------------------------------------- #
+
+def test_chain_relays_a_child_s_non_ascii_output_without_dying():
+    """A ten-hour chain must not be killable by a character.
+
+    ``champion.promote`` ends with ``"kept the current champion — " + reason``. Its stdout is
+    a pipe, so Python encodes it with the locale codec; on Windows that is cp1252, where the
+    em-dash is the single byte ``0x97``, which is not valid UTF-8. Decoding it with
+    ``errors="replace"`` gave ``U+FFFD``, cp1252 cannot encode ``U+FFFD`` on the way back
+    out, and the chain died at 02:39 with six hours of its window unused.
+
+    So this asserts the round trip, not the workaround: what the child printed is what the
+    chain gets back.
+    """
+    from training.alphazero import chain
+
+    message = "kept the current champion — not shown better"
+    ok, output = chain.run(
+        [sys.executable, "-c", f"print({message!r})"], lambda _: None)
+
+    assert ok
+    assert message in output, (
+        f"the child's output did not survive the pipe: {output!r}"
+    )
+    assert "\ufffd" not in output, (
+        "a replacement character means the two ends disagreed about the encoding; "
+        "printing this is what killed the chain"
+    )
+
+
+def test_chain_logging_survives_a_console_that_cannot_encode_the_message():
+    """Even if something unencodable does reach the log, printing it must not raise.
+
+    The belt to :func:`test_chain_relays_a_child_s_non_ascii_output_without_dying`'s braces.
+    A crash here costs every remaining stage, so the log is allowed to be ugly and is not
+    allowed to be fatal.
+    """
+    from training.alphazero import chain
+
+    raw = io.BytesIO()
+    cp1252 = io.TextIOWrapper(raw, encoding="cp1252", errors="strict")
+    with redirect_stdout(cp1252):
+        chain.use_utf8_console()
+        print("kept the current champion \ufffd not shown better")
+        sys.stdout.flush()
+
+    assert b"kept the current champion" in raw.getvalue()
+
+
+# ---------------------------------------------------------------------------------------- #
+# The opening: a 54-wide root                                                                #
+# ---------------------------------------------------------------------------------------- #
+
+def _opening_search(budget, floor, seed=0):
+    """A search at the first settlement placement, driven by a deliberately peaked prior.
+
+    Peaked because that is the case the floor exists for: PUCT following a confident prior
+    concentrates, which is right at six legal moves and wrong at fifty-four.
+    """
+    env = CatanEnv(num_players=2, ruleset=RANKED_1V1, max_turns=400)
+    _, info = env.reset(seed=seed)
+    assert env.state.phase is Phase.SETUP_SETTLEMENT
+    world = determinize(env.state, info["player"], rng=random.Random(seed))
+    search = Search(world, budget=budget, rng=np.random.default_rng(seed), noise=0.0,
+                    root_min_visits=floor)
+    while (pending := search.request()) is not None:
+        flags = np.frombuffer(bytes(pending[1]), dtype=np.uint8).astype(np.float64)
+        probabilities = flags * 1e-3
+        probabilities[int(np.argmax(flags))] = 1.0
+        search.deliver(probabilities / probabilities.sum(), 0.0)
+    return search
+
+
+def test_without_the_floor_a_wide_root_is_barely_examined():
+    """The behaviour the floor exists to fix, pinned so the comparison below means something.
+
+    Measured on the champion rather than this synthetic prior, at the ``noise=0`` this test
+    also uses: a median of 3 of the 54 spots at 96 simulations and 5 at 400. Record 0028 has
+    the table at all three noise settings; quote it from there rather than from here. An
+    opening chosen from three candidates cannot be reasoning about which *pair* of
+    settlements it ends up with.
+    """
+    search = _opening_search(budget=200, floor=0)
+    examined = int((search.root.child_n > 0).sum())
+    assert len(search.root.actions) > 40, "this seed is not the wide root the test needs"
+    assert examined < len(search.root.actions) / 3, (
+        f"PUCT examined {examined} of {len(search.root.actions)} spots; if this has become "
+        f"broad on its own, the floor may no longer be earning its complexity"
+    )
+
+
+def test_the_floor_makes_every_opening_spot_get_looked_at():
+    search = _opening_search(budget=200, floor=2)
+    counts = search.root.child_n
+    assert (counts >= 2).all(), (
+        f"{int((counts < 2).sum())} of {len(counts)} spots came in under the floor"
+    )
+
+
+def test_the_forced_sweep_does_not_reach_the_policy_target():
+    """The floor is measurement, not preference.
+
+    If the guaranteed visits were left in the counts, a 54-wide root with a floor of 2 would
+    hand the trainer a target that is 108 parts uniform to a handful of parts opinion — the
+    search would have been made *worse* by looking at more of the board. So the target must
+    stay at least as sharp as the same search without the floor.
+    """
+    with_floor = _opening_search(budget=200, floor=2)
+    without = _opening_search(budget=200, floor=0)
+
+    def entropy(search):
+        _, probabilities = search.policy_target()
+        probabilities = probabilities[probabilities > 0]
+        return float(-(probabilities * np.log(probabilities)).sum())
+
+    uniform = float(np.log(len(with_floor.root.actions)))
+    assert entropy(with_floor) < uniform / 2, "the target came back close to uniform"
+    assert entropy(with_floor) <= entropy(without) + 1e-9
+
+
+def test_the_forced_sweep_does_not_reach_the_move_that_is_played():
+    """Self-play plays the opening at temperature 1.0, sampling from the counts.
+
+    With the floor left in, 53 spots at 2 visits against one spot's discretionary handful
+    means the sampler picks an arbitrary spot almost every time — the opening would become
+    close to random exactly where the extra compute was spent.
+    """
+    search = _opening_search(budget=200, floor=2)
+    picks = collections.Counter(search.best_action(temperature=1.0) for _ in range(200))
+    assert len(picks) < len(search.root.actions) / 2, (
+        f"sampling reached {len(picks)} distinct spots of {len(search.root.actions)}; the "
+        f"forced sweep is leaking into best_action"
+    )
+
+
+def test_root_min_visits_defaults_to_off():
+    """Every existing caller must be unchanged, so the default has to be inert."""
+    plain = _opening_search(budget=200, floor=0)
+    assert plain.root_min_visits == 0
+    default = Search(determinize(CatanEnv(num_players=2, ruleset=RANKED_1V1).reset(seed=0)[1]
+                                ["view"]._state, 1, rng=random.Random(0)),
+                     budget=8, rng=np.random.default_rng(0))
+    assert default.root_min_visits == 0

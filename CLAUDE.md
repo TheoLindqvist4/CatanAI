@@ -70,8 +70,8 @@ vertex row, because counting to them by hand is how a test broke.
 
 ```
 tiles         19 x 19   resource, number, odds, robber
-vertices      54 x 27   owner, city, harbour, pip potential, buildability,
-                        per-resource production, harbour nearness
+vertices      54 x 27   owner, city, harbour, pip potential (retired, 0.0),
+                        buildability, per-resource production, harbour nearness
 roads         72 x  6   owner, buildability
 players        4 x 34   hands and holdings (masked for opponents), production rate
 affordability  4 x  4   my hand against each purchase, priced through my trade rates
@@ -102,6 +102,18 @@ rule would otherwise forbid it: it answers what `victory_points`, `public_victor
 both rulesets and compares at *every* position. If you change scoring, that test is what will
 tell you the encoder disagrees.
 
+⚠️ **`interfaces/web/stats.py::owed` is a second implementation of the production walk**,
+written in that same idiom and legal for the same reason. `catan.rules.distribute` skips a
+tile under the robber with a bare `continue` and the amount is gone — nothing returns it and
+no event reports it — so the end-of-game panel's "what the robber cost you" is the one figure
+there that has to be *computed*, by walking the producers with and without the blocked tile
+and differencing. `catan.rules` is still the authority. What makes it legal is
+`tests/test_web_stats.py::test_what_the_robber_blocked_agrees_with_the_rules`, which drives
+whole games and compares `owed` against what `distribute` actually pays, for every total 2-12
+at every position — against a full bank, because `owed` is deliberately the payout *before*
+the shortage rule. If you change `distribute`, that test is what will tell you the panel
+disagrees.
+
 **Encoding a constant is worth nothing.** The cost table is identical in every state, so it
 folds into a bias in one gradient step. What the `affordability` block encodes is the
 *state-dependent* part: cards short, and what closing the gap would cost at the bank given my
@@ -111,9 +123,25 @@ argument for four columns rather than twenty lives.
 **What is NOT in it, and people assume is:**
 - ~~**Which numbers a vertex touches.**~~ Fixed in record 0024: a vertex now carries its
   expected cards *per resource*, and how near the closest harbour of each kind is. The old
-  resource-blind `pip potential` is still there and still first — the agent that maximised it
-  placed at 0.005 pips off the best available spot every time, which is what a resource-blind
-  signal gets you.
+  resource-blind `pip potential` slot is **still in the vertex row and now carries a constant
+  0.0** on all 54 vertices — `encoder.PIP_POTENTIAL` is `False` and the one write site is the
+  static template. The slot stays because deleting it would move every offset after it inside
+  a vertex row and change `SIZE`: the vertices block would have *shrunk*, and
+  `layouts.column_map` reconciles only blocks that grew — it raises rather than invent a
+  column correspondence that does not exist — so no existing checkpoint could be grafted onto
+  the result and `models/champion_az.pt` would stop loading, which leaves the AlphaZero gate
+  with nothing to measure against. `layouts.HISTORICAL` is **not** what stands in the way: it
+  is keyed 1868 and 1884 only, and a checkpoint at the current `SIZE` carries its own layout,
+  so the table is never consulted for one. Writing 0.0 removes the *information* at no
+  compatibility cost and leaves `SIZE` at 2,503. **Restoring it is not one line** —
+  `tests/test_encoder.py::test_pip_potential_is_retired_but_its_slot_is_still_there` asserts
+  the flag is off, so shipping it flipped is a two-file change. The arithmetic is kept and
+  tested by `test_pip_potential_still_sums_the_adjacent_odds_when_switched_back_on`, so
+  *trying* it is an afternoon rather than archaeology. It was the only placement signal the
+  observation had and the agent maximised it essentially perfectly —
+  0.005 pips off the best available spot — which is what a resource-blind signal gets you;
+  the per-resource production record 0024 added supersedes it, so this retires the guide that
+  came first rather than leaving it to be unlearned. Record 0029.
 - **Adjacency**, for the flat MLP. It must infer that vertex 23 neighbours 24 from
   correlations, though `topology.py` knows.
 - **Any estimate of an opponent's hand.** Deliberate — a robber steal moves a card only two
@@ -123,9 +151,13 @@ argument for four columns rather than twenty lives.
 Changing `encoder.SIZE` no longer invalidates a checkpoint, as long as the change **appends**:
 `training/alphazero/layouts.py` records the block shapes, new checkpoints carry their own, and
 `network.graft` widens every observation-width layer with zero columns. Verified rather than
-assumed — the champion measured 74.7% before the 1884 → 2503 change and 75.6% after. Add an
-entry to `layouts.HISTORICAL` keyed by the new size, and **never edit an existing one**: it is
-a statement about a file already on disk. The interfaces check `obs_size` *and*
+assumed — the champion *of the time* measured 74.7% against the heuristic before the
+1884 → 2503 change and 75.6% after being grafted (record 0024); several promotions have
+happened since, so neither figure describes the reigning champion. You do **not** need to add
+an entry to `layouts.HISTORICAL` for a new size — every checkpoint written since
+`layouts.signature` existed carries its own block shapes, and the table is consulted only for
+the two that predate it (1868 and 1884). **Never edit an existing entry**: it is a statement
+about a file already on disk. The interfaces check `obs_size` *and*
 `num_actions` before offering a model, because a stale one loads fine and then fails on the
 first move.
 
@@ -156,6 +188,13 @@ and opponents' hands are copied verbatim, so a lookahead over `BUY_DEV_CARD`, `M
 AlphaZero package answers the same problem the other way — `training/alphazero/determinize.py`
 resamples everything hidden from what is public, so its search may go as deep as it likes.
 **Anything that searches must go through one of those two doors.**
+
+**`gumbel` and `root_min_visits` are mutually exclusive, and nothing says so.**
+`Search._descend` takes the Gumbel root when `gumbel` is set and only reaches the floor in the
+`elif`, and `best_action`/`policy_target` skip `_discretionary_counts` on that path too. So a
+config carrying both `gumbel: true` and `setup_root_min_visits: 4` is accepted, runs, and
+searches the opening exactly as it did before the floor existed. The Gumbel root is off by
+default — record 0026 measured it worse here — so this only bites whoever turns it back on.
 
 **`models/champion.pt` has not loaded since the affordability block landed.** It was promoted
 at `encoder.SIZE == 1868`; the encoder is now 1884, so `training.champion.load()` returns
@@ -248,6 +287,35 @@ may be either player. `Search` refuses `num_players != 2` for that reason. Force
 (≈30% of decisions) are collapsed during descent and never recorded: a one-hot policy target
 teaches nothing and costs a network evaluation.
 
+**The opening root is 54 moves wide, and PUCT was tuned for six.** A first settlement offers
+54 legal spots — exactly 54 on 40 boards out of 40 — against a normal turn's six, and PUCT
+concentrates, which is right at six and wrong at fifty-four. Measured on the reigning champion
+at the `noise=0` that play and evaluation use, 40 boards: a 400-simulation search examines a
+mean of **5.9 of the 54**, 4.2 at 96 simulations, 8.2 at 1,600 (24 boards there). The
+distribution has a long right tail — one board in forty examines all 54 — so the medians are
+the honest summary: 5, 3 and 7. Budget buys breadth
+very slowly, so the opening was being chosen from about three spots the prior already liked.
+`Search(root_min_visits=4)` gives every spot four visits before PUCT may concentrate and
+reaches **all 54, on 40 boards out of 40**, at each of the four placements of an opening, for
+the same cost — 0.319 s against plain PUCT's 0.335 s at 400 simulations on one thread, because
+the forced sweep builds a shallower tree. `MCTSAgent` applies both at `SETUP_SETTLEMENT`, so
+every agent that searches now plays its opening this way; self-play also exempts setup from
+the playout cap and records every placement, road included, since there are only two
+settlements per player and the cap was keeping a fraction of them. Record 0028.
+
+⚠️ **The forced sweep is measurement, not preference, and must reach neither the move played
+nor the label.** `Search._discretionary_counts` subtracts the floor from the root counts before
+`best_action` and `policy_target` read them — **read that docstring before changing either.**
+Without the subtraction the 4 x 54 = 216 forced visits swamp a best spot's handful of chosen
+ones, and sampling the raw counts at temperature 1.0 picks an arbitrary spot. What the floor
+buys is breadth in what the search *looks at*: after the subtraction the recorded target is
+still concentrated on a mean of 3.5 spots (median 3, range 1-9; 400 simulations, floor 4, 40
+boards), about the same handful plain PUCT would have examined. The margin is thinner than it
+looks. 400 simulations over 54 spots is 7.4 visits each, so a floor of 8 never finishes its
+sweep — 8 x 54 = 432 against the root's 399 visits — the discretionary counts come back
+identically zero on 40 boards out of 40, the fallback returns the raw near-uniform counts, and
+the failure the subtraction exists to prevent is back. Nothing raises.
+
 **The AlphaZero run is warm-started, and that is a choice, not a default.** At the simulation
 counts a CPU affords, MCTS is a modest improvement over its prior, so starting from a policy
 that already plays is what makes a few hours worth anything. `--cold` does it the guide's way.
@@ -293,18 +361,35 @@ Four points of signal. Root noise alone flipped 24% of the top moves — 0.25 is
 curves and win rates cannot tell "learning slowly" from "learning from nothing"; this
 measurement takes three minutes and does.
 
-**The champion is not the newest model.** `models/champion.pt` changes only through
-`training.champion promote`, which requires the Wilson lower bound over 400 games to clear
-50% *and* no regression against the fixed heuristic. The gate has already refused a completed
-run. Never copy a checkpoint into `models/` by hand.
+**The champion is not the newest model.** A champion changes only through `promote`, and the
+gate has already refused a completed run. Never copy a checkpoint into `models/` by hand.
 
-⚠️ **The gate does not run when there is no loadable champion.** `promote` takes its
-`reigning is None` branch and installs immediately — no Wilson bound, no regression check — and
-then overwrites the `beat_heuristic` baseline that every *later* candidate is compared against.
-This fires exactly when `encoder.SIZE` has changed, because the reigning champion no longer
-loads. So after any observation change the first promotion is ungated by construction: measure
-against `HeuristicAgent(noise=0)` by hand first, and say in the record that the baseline was
-reset.
+**The two lineages gate differently, and on purpose.**
+
+* `training.alphazero.champion promote` — **one rung decides: the reigning champion.** Wilson
+  lower bound over 400 games above 50%, and nothing else can refuse. Two matches are *played*
+  by default, though, and the distinction matters when you are budgeting time: `ppo_games`
+  defaults to `games`, so the PPO champion is played whenever one loads, and that figure is
+  recorded and cannot veto. The heuristic is the rung that is off by default —
+  `baseline_games` defaults to 0, and `--baseline-games` plays it if asked and *records* the
+  number, but it cannot refuse either. `training/alphazero/chain.py` passes `--ppo-games 0`,
+  so the overnight chain plays exactly one match; that is the chain's choice, not the gate's
+  default. The tripwire argument is still true — self-play is non-transitive, so a candidate
+  can climb the ladder by learning the champion's habits while getting worse at the game — and
+  the veto was removed anyway, so that "promoted" means exactly one measurable thing.
+  `tests/test_alphazero.py::test_the_heuristic_cannot_veto_a_candidate_that_beat_the_champion`
+  says so, so that a revert is a decision rather than a drift.
+* `training.champion promote` — the PPO lineage, unchanged: Wilson bound **and** no
+  regression against the fixed heuristic.
+
+⚠️ **With no loadable champion the AlphaZero gate has nothing to measure against, so it
+refuses.** The heuristic used to fill that hole; it no longer does. This fires exactly when
+`encoder.SIZE` has changed, because the reigning champion stops loading — and CLAUDE.md used
+to record the *opposite* failure here, `promote` installing immediately with no Wilson bound
+at all. Installing the first champion of a lineage is now an explicit `--force --reason`,
+which the record carries forever as `forced`. Measure by hand first and put the number in the
+reason. **The PPO gate still has the old hole** — `reigning is None` there still installs
+immediately.
 
 ---
 
@@ -328,7 +413,7 @@ Recorded so it is not re-attempted.
 
 | | |
 |---|---|
-| Why something is the way it is | `docs/decisions/` — 23 records |
+| Why something is the way it is | `docs/decisions/` — 30 records |
 | What is done and what is next | `ROADMAP.md` |
 | Whether a change helped | `training/evaluate.py`, and use enough games |
 | How fast anything is | `python -m benchmark.benchmark`, and warm up first |
@@ -336,9 +421,17 @@ Recorded so it is not re-attempted.
 | Where the time goes | `python -m benchmark.profiler selfplay` |
 | What the bot did in a real game | `python -m interfaces.web.recorder --margin 5` |
 
-Run the full suite before committing: `python -m pytest tests -q` (~2 min). Two tests are
-timing-based and flake under load — re-run them alone before believing a failure, **and check
-`tasklist | grep python` first, because "alone" is not "unloaded"**.
+Run the full suite before committing: `python -m pytest tests -q` — 934 passed, 1 skipped in
+375 s on a quiet machine, so budget **about six minutes**. `-m "not slow"` does not buy that
+back: it deselects 35 tests and still takes 354 s, because the cost is the web tests playing
+whole games rather than the fuzzing.
+
+Five tests are timing-based, and two of them assert an absolute figure close enough to what
+the code actually measures to flake under load — re-run them alone before believing a failure,
+**and check `tasklist | grep python` first, because "alone" is not "unloaded"**.
 `test_sharing_the_stream_makes_cloning_much_cheaper` asserts an absolute `< 10 us` and read
 15.8 µs against a live training run, where the same unchanged code measures 4.4 µs on a quiet
-machine. The threshold is right; the box was busy.
+machine; `test_constructing_one_is_cheap` asserts `< 5 us` on the same kind of margin. The
+thresholds are right; the box was busy. The other three — a clone under 100 µs, an encode
+under 5 ms, the mask within 1.5x of `legal_actions` — have room to spare, so a failure there
+is a regression rather than a busy machine.

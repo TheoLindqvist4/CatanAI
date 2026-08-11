@@ -246,3 +246,319 @@ button .res-card {
   border-radius: 3px;
   padding-left: 3px;
 }
+
+/* ---------------------------------------------------------------- overlays */
+/* Two of them: the result of the game, and the statistics panel. Both are drawn over the
+   board rather than beside it — the board is what they are about, and a game that has ended
+   has nothing left to click.
+
+   None of this exists anywhere near the engine. Training never loads this file, so an
+   animation here costs a self-play game exactly nothing. */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(8, 11, 15, 0.72);
+  animation: overlay-in 220ms ease-out;
+}
+
+.overlay[hidden] { display: none; }
+
+@keyframes overlay-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.sheet {
+  background: #1b1f26;
+  border: 1px solid #2c323c;
+  border-radius: 10px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  max-height: 100%;
+  overflow-y: auto;
+  animation: sheet-in 260ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes sheet-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.97); }
+  to   { opacity: 1; transform: none; }
+}
+
+.sheet-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border-bottom: 1px solid #2c323c;
+  position: sticky;
+  top: 0;
+  background: #1b1f26;
+}
+
+.sheet-head h2 { margin: 0; }
+.sheet-body { padding: 16px 18px 20px; }
+
+.close {
+  background: none;
+  border: none;
+  color: #8b93a1;
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 6px;
+}
+.close:hover { background: #262c36; color: #e8e8ea; }
+
+/* ------------------------------------------------------------ the result */
+/* What a game ends with. The board already goes quiet — no buttons, nothing to place — so
+   without this the end of a game is a grey line of text in the hint bar. */
+
+.result {
+  width: min(420px, 100%);
+  text-align: center;
+  padding: 30px 26px 24px;
+  border-top: 3px solid #4aa564;
+}
+.result.lost { border-top-color: #d64545; }
+.result.neutral { border-top-color: #8b93a1; }
+
+.result-badge {
+  font-size: 42px;
+  line-height: 1;
+  display: block;
+  margin-bottom: 10px;
+  animation: badge-in 620ms cubic-bezier(0.16, 1, 0.3, 1) 120ms backwards;
+}
+
+@keyframes badge-in {
+  0%   { opacity: 0; transform: scale(0.3) rotate(-18deg); }
+  60%  { opacity: 1; transform: scale(1.14) rotate(4deg); }
+  100% { opacity: 1; transform: none; }
+}
+
+.result h2 {
+  margin: 0 0 6px;
+  font-size: 27px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #e8e8ea;
+  animation: rise 420ms ease-out 200ms backwards;
+}
+.result.won h2 { color: #6ec38a; }
+.result.lost h2 { color: #e88585; }
+
+.result-sub {
+  color: #9aa3b2;
+  margin-bottom: 16px;
+  animation: rise 420ms ease-out 280ms backwards;
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* The final score, big enough to be the thing you read first. */
+.result-score {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 18px;
+  animation: rise 420ms ease-out 360ms backwards;
+}
+
+.score-side {
+  flex: 1 1 0;
+  padding: 10px 8px;
+  background: #232a34;
+  border-radius: 7px;
+  border-top: 3px solid #555;
+}
+.score-side .who { color: #9aa3b2; font-size: 12px; }
+.score-side .points { font-size: 30px; font-weight: 700; line-height: 1.15; }
+.score-dash { align-self: center; color: #5c6675; }
+
+.result-actions { display: flex; gap: 8px; justify-content: center; }
+.result-actions button { padding: 7px 14px; }
+
+/* Confetti — a win only, and purely decorative, so it is aria-hidden and pointer-inert.
+   Each piece is given its own left/delay/duration/colour in JS; everything shared is here. */
+.confetti {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.confetti i {
+  position: absolute;
+  top: -12px;
+  width: 8px;
+  height: 13px;
+  border-radius: 1px;
+  animation: fall linear forwards;
+}
+
+@keyframes fall {
+  from { transform: translateY(-14px) rotate(0deg); opacity: 1; }
+  to   { transform: translateY(102vh) rotate(720deg); opacity: 0.85; }
+}
+
+/* Nobody should be made motion-sick by a scoreboard. The overlay still appears and still
+   says who won — only the movement goes. */
+@media (prefers-reduced-motion: reduce) {
+  .overlay, .sheet, .result-badge, .result h2, .result-sub, .result-score {
+    animation: none;
+  }
+  .confetti { display: none; }
+}
+
+/* ------------------------------------------------------------ statistics */
+
+.stats-sheet { width: min(880px, 100%); }
+
+.stats-section + .stats-section { margin-top: 22px; }
+.stats-section > h3 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: #8b93a1;
+  font-weight: 600;
+}
+
+/* The legend, which is what carries series identity — never colour alone. */
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 12px; }
+.legend span { display: inline-flex; align-items: center; gap: 6px; color: #9aa3b2;
+               font-size: 12.5px; }
+.legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.legend i.expected {
+  width: 2px; height: 13px; border-radius: 0; background: #6f7b8c;
+}
+
+/* --- the dice distribution ---------------------------------------------- */
+/* One row per total, so every number keeps a row even when it never came up: a gap in the
+   middle of a histogram reads as missing data rather than as "never rolled". */
+
+.dice-chart { display: grid; gap: 4px; }
+
+.dice-row {
+  display: grid;
+  grid-template-columns: 22px 1fr 26px;
+  align-items: center;
+  gap: 8px;
+}
+.dice-row .total { color: #9aa3b2; font-size: 12.5px; text-align: right;
+                   font-variant-numeric: tabular-nums; }
+.dice-row .count { color: #e8e8ea; font-size: 12.5px;
+                   font-variant-numeric: tabular-nums; }
+.dice-row.seven .total { color: #e8e8ea; font-weight: 700; }
+
+/* The track is the measuring space, not a mark: no fill, so the bar is the only ink. */
+.dice-track { position: relative; height: 15px; }
+
+.dice-bar { display: flex; height: 100%; }
+
+/* Square where it grows from, rounded at the data end — and a 2px gap in the surface
+   colour between the two players' segments rather than a stroke around them. */
+.dice-bar .seg { height: 100%; }
+.dice-bar .seg + .seg { margin-left: 2px; }
+.dice-bar .seg:last-child { border-radius: 0 4px 4px 0; }
+
+/* What a fair 36-roll deck would have given over the same number of rolls. A reference,
+   so it is a hairline behind the data rather than a second bar competing with it. */
+.dice-expected {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  background: #6f7b8c;
+  border-radius: 1px;
+}
+
+/* --- per-player figures -------------------------------------------------- */
+
+.stat-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.stat-card {
+  background: #171b21;
+  border: 1px solid #2c323c;
+  border-left: 4px solid #555;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.stat-card > h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #e8e8ea;
+}
+
+.stat-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 0;
+  color: #9aa3b2;
+  font-size: 12.5px;
+}
+.stat-row b { color: #e8e8ea; font-variant-numeric: tabular-nums; font-weight: 600; }
+.stat-row + .stat-sub { margin-top: 2px; }
+
+.stat-group {
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid #262c36;
+}
+.stat-group > h5 {
+  margin: 0 0 5px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: #6f7b8c;
+  font-weight: 600;
+}
+
+/* A per-resource figure reads as its card plus a number, the way a hand does everywhere
+   else in this interface. */
+.res-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.res-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  color: #e8e8ea;
+  font-variant-numeric: tabular-nums;
+}
+.res-count.zero { opacity: 0.32; }
+
+/* --- where the points came from ----------------------------------------- */
+
+.points-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.points-table th {
+  text-align: left;
+  color: #8b93a1;
+  font-weight: 600;
+  padding: 4px 8px 6px;
+  border-bottom: 1px solid #2c323c;
+}
+.points-table th.num, .points-table td.num { text-align: right;
+                                             font-variant-numeric: tabular-nums; }
+.points-table td { padding: 4px 8px; color: #9aa3b2; border-bottom: 1px solid #21262e; }
+.points-table td.source { color: #e8e8ea; }
+.points-table tr.total td { color: #e8e8ea; font-weight: 700; border-bottom: none; }
+.points-table td.zero { opacity: 0.4; }
+.points-table .held { color: #d8b44a; }
+
+/* Said rather than shown as a zero: while the game runs, the opponent's Victory Point
+   cards are unknown, and a "0" there would be a claim this panel cannot make. */
+.points-note { color: #8b93a1; font-size: 12px; margin-top: 8px; }

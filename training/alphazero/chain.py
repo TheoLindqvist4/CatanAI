@@ -25,15 +25,23 @@ one process a bad iteration would take the whole night.
 import argparse
 import datetime
 import json
+import os
 import pathlib
 import subprocess
 import sys
 import time
 
 #: Wall-clock reserved for the ranking and the gate at the end of a stage. Measured on this
-#: machine: ranking five candidates over 120 games is ~9 minutes and a 400/200-game gate is
-#: ~20, so 35 minutes is the honest figure with room to spare. A stage will not start unless
-#: this much plus a worthwhile amount of training fits before the deadline.
+#: machine: ranking five candidates over 120 games is ~9 minutes, and the gate as it stood
+#: then — 400 head-to-head plus 200 against the heuristic — was ~20.
+#:
+#: That gate can no longer happen. ``--baseline-games`` defaults to 0 and the chain passes
+#: ``--ppo-games 0``, so ``promote`` plays one 400-game match and nothing else: two-thirds of
+#: the games, so about 13 minutes of the 20. That is arithmetic on the old measurement rather
+#: than a fresh one. 9 + 13 is 22, and 35 keeps the margin the number was chosen to have —
+#: the margin is what a stage forfeits when a match runs long, not slack to be reclaimed.
+#: A stage will not start unless this much plus a worthwhile amount of training fits before
+#: the deadline.
 EVALUATION_MINUTES = 35
 
 #: The shortest stage worth starting. Below this the evaluation costs more than the training.
@@ -59,11 +67,34 @@ def parse_deadline(text):
     raise ValueError(f"could not read {text!r} as a time; try '2026-08-06 09:00' or '9h'")
 
 
+def use_utf8_console():
+    """Make this process's own console unable to raise on a character.
+
+    Belt to :func:`run`'s braces. ``run`` asks its children for UTF-8, but nothing at all
+    should be able to kill an overnight chain by printing something — the log is allowed to
+    be ugly and is not allowed to be fatal. The log *file* is opened as UTF-8 already; this
+    is the console half.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):   # not a real stream, or already detached
+            pass
+
+
 def run(command, log):
-    """Run a subprocess, streaming nothing, returning ``(ok, tail)``."""
+    """Run a subprocess, streaming nothing, returning ``(ok, tail)``.
+
+    The child's stdout is a pipe, so Python encodes it with the locale codec — cp1252 here,
+    which maps the em-dash in ``champion.promote``'s own summary line onto the single byte
+    ``0x97``. Decoding that as UTF-8 below yields ``U+FFFD``, which cp1252 cannot encode on
+    the way back out, so :func:`log` raised and a ten-hour chain died at 02:39 relaying
+    someone else's punctuation. Tell the child to use UTF-8 so both ends agree.
+    """
     log(f"    $ {' '.join(str(part) for part in command)}")
     finished = subprocess.run(command, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace")
+                              encoding="utf-8", errors="replace",
+                              env=dict(os.environ, PYTHONIOENCODING="utf-8"))
     output = (finished.stdout or "") + (finished.stderr or "")
     return finished.returncode == 0, output
 
@@ -128,9 +159,9 @@ def main(argv=None):
                         help="run directories are <prefix>_1, _2, ...")
     parser.add_argument("--gate-games", type=int, default=400,
                         help="head-to-head games in the promotion gate")
-    parser.add_argument("--baseline-games", type=int, default=200,
-                        help="heuristic games in the gate: the overfitting tripwire, not a "
-                             "strength check. 0 disables it")
+    parser.add_argument("--baseline-games", type=int, default=0,
+                        help="heuristic games in the gate, recorded and never a veto. 0, the "
+                             "default, does not play it — the gate is the champion alone")
     parser.add_argument("--rank-games", type=int, default=120,
                         help="games per candidate when choosing what to submit")
     parser.add_argument("--simulations", type=int, default=64)
@@ -142,6 +173,8 @@ def main(argv=None):
     deadline = parse_deadline(arguments.until)
     log_path = pathlib.Path(f"{arguments.prefix}_chain.log")
     log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    use_utf8_console()
 
     def log(message):
         stamped = f"[{datetime.datetime.now():%H:%M:%S}] {message}"
