@@ -19,6 +19,7 @@ how things work, and why they were decided that way.
 | [images/board-example.png](images/board-example.png) | A game rendered by `interfaces/render.py`. |
 | [audit-2026-07-30.md](audit-2026-07-30.md) | Full audit of the codebase at commit `e0f91a3`: verified bugs, missing rules, AI-readiness blockers, and what Phase 0 measured. |
 | [audit-2026-08-05-public-arena.md](audit-2026-08-05-public-arena.md) | What it would take to let strangers submit agents, rank them, and play the best of them: the reuse inventory, the verified containment failures, why the seed defeats every submission format, measured throughput and cost, and the decisions to take before writing code. |
+| [model-contract.md](model-contract.md) | CATANIA-1: what a set of weights has to agree with before this engine will play it, what a recorded number has to name, how a submission is validated, and how to install the runtime. `catan/contract.py` is the specification; this is the prose. |
 | [website-split-plan.md](website-split-plan.md) | The plan for the two-repository split: what `catania-runtime` contains, the five phases that turn this repository into a consumable one, and what CatanIA-Web is allowed to hold. Reconciles the go-live PDF against the audit above, which contradicts it in nine places. |
 
 Everything that prints lives in `interfaces/`: `render.py` draws a PNG, `cli.py` plays or

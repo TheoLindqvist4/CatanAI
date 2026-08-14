@@ -44,6 +44,18 @@ The engine needs **no dependencies at all**. Only training needs PyTorch:
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 ```
 
+It also installs as a package, which is how the [website](https://github.com/TheoLindqvist4/CatanAI-Website)
+consumes it without gaining a second copy of the rules:
+
+```sh
+pip install catania-runtime                 # the engine. no dependencies at all
+pip install catania-runtime[inference]      # + torch, to load and play a model
+```
+
+That empty dependency list is checked rather than claimed — `tests/test_packaging.py` parses
+every file in `catan/` and fails if one imports anything outside the standard library. See
+[`docs/model-contract.md`](docs/model-contract.md).
+
 ---
 
 ## The three ideas this project is built on

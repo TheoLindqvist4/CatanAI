@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "catania-runtime"
+version = "0.1.0"
+description = "The CatanIA engine, observation and inference runtime, packaged for a consumer."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Theo Lindqvist" }]
+keywords = ["catan", "reinforcement-learning", "alphazero", "game-engine"]
+
+# Deliberately empty, and it is the most important line in this file. `catan/` is the rules,
+# the geometry, the state model, the 2,503-float observation, the 325-action space and the
+# public-information filter, and it imports nothing outside the standard library. A consumer
+# that only needs to run games installs this and nothing else.
+dependencies = []
+
+[project.optional-dependencies]
+# Playing a network, and everything that loads or validates a weight file.
+inference = ["torch>=2.0"]
+
+# The local browser game and the PNG renderer. `interfaces/render.py` imports PIL at module
+# level and `interfaces/web/api.py` imports `Geometry` from it, so a service reusing the
+# session and the public payload needs this too. It is coordinate arithmetic reached through
+# a drawing module; splitting them is a tidy-up, not a blocker.
+web = ["pillow>=10.0"]
+
+dev = ["pytest>=8.0", "pillow>=10.0", "torch>=2.0"]
+
+[project.urls]
+Repository = "https://github.com/TheoLindqvist4/CatanAI"
+Platform = "https://github.com/TheoLindqvist4/CatanAI-Website"
+
+[tool.setuptools]
+# Listed rather than discovered. `benchmark/` and `tests/` are development tools that work
+# from a source checkout and have no business in a consumer's site-packages, and a wheel that
+# quietly grew a package would be a wheel nobody had decided on.
+packages = [
+    "catan",
+    "interfaces",
+    "interfaces.web",
+    "training",
+    "training.alphazero",
+]
+
+[tool.setuptools.package-data]
+# The board art and the local client. The website serves these from the installed package
+# rather than keeping a second copy, which is the same rule the browser already follows: the
+# art set calls wheat `weat` and ore `stone`, and a second copy of that mapping is a bug
+# waiting to happen.
+"interfaces" = ["static/images/**/*.png"]
+"interfaces.web" = ["static/*.html", "static/*.css", "static/*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: whole-game fuzzing. Deselect during development with -m \"not slow\"."]

@@ -461,8 +461,20 @@ Recorded so it is not re-attempted.
 | Where the time goes | `python -m benchmark.profiler selfplay` |
 | What the bot did in a real game | `python -m interfaces.web.recorder --margin 5` |
 
-Run the full suite before committing: `python -m pytest tests -q` — 936 passed, 1 skipped in
-375 s on a quiet machine, so budget **about six minutes**. `-m "not slow"` does not buy that
+⚠️ **`catan/` imports nothing outside the standard library, and `pyproject.toml` declares
+`dependencies = []` on the strength of it.** One `import numpy` there breaks the whole
+two-repository split and would never fail on this machine, which has numpy.
+`tests/test_packaging.py` parses every file in `catan/` and is what notices. Torch is the
+`inference` extra, pillow the `web` extra — `interfaces/web/api.py` needs pillow because
+`Geometry` is reached through `interfaces/render.py`, which imports PIL at module level.
+
+**Pin threads before importing torch, in anything that serves.** `training/threads.py::pin()`,
+first line of the entrypoint — it returns `False` if torch was already imported, because the
+OpenMP pool is sized at import and setting the variables afterwards silently does nothing. The
+measured cost of missing it is median 1,758 ms against 179 ms, p90 17,983 ms against 237 ms.
+
+Run the full suite before committing: `python -m pytest tests -q` — 1,029 passed, 1 skipped in
+425 s on a quiet machine, so budget **about seven minutes**. `-m "not slow"` does not buy that
 back: it deselects 35 tests and still takes 354 s, because the cost is the web tests playing
 whole games rather than the fuzzing.
 
