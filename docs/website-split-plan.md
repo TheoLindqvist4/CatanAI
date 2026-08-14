@@ -14,6 +14,55 @@ observation, not the public-information filter, and not the board-to-pixels layo
 
 ---
 
+## Where this stands — 14 August 2026
+
+**Phase A is complete and tagged `runtime-v0.1.0`** (commit `9d3008d`, branch
+`website-split`, pushed to origin). Phase B has not started.
+
+| | | |
+|---|---|---|
+| A1 | version identity and the contract | `02f2f92` |
+| A2 | one loader, and it does not execute what it is given | `f9df582` |
+| A3 | the weight validator | `9bb2b26` |
+| A4 | the two leaks closed | `51caac2` |
+| A5 | packaging, the thread pin, the contract document | `9d3008d` |
+
+The full suite is **1,029 passed, 1 skipped in 425 s** — budget seven minutes, not six.
+
+Facts established while doing it, which the rest of the plan now depends on:
+
+- `contract.signature()` is `CATANIA-1/engine-0.1.0/obs-1:2503/act-1:325/catan-1v1-v1`.
+  The rules digest is `57abae04b5c9a170` over 2,178 decisions.
+- **`weights_only=True` loads everything this repository writes** — both champions and a full
+  training checkpoint, including `pool.snapshot()`'s tuples. `weights_only=False` now appears
+  nowhere outside one warned fallback, and a test walks the tree to keep it that way.
+- The official champion is `gen6-gilded-beacon`, sha256
+  `01893a0c0c1f3f943397d40e756736e66c4252e174bb3d5aacd3d08ce0a1c0a0`, `structured-v1`,
+  **375,106 parameters**, played at 64 simulations. `models/champion.pt` is 1868-wide and does
+  not load, which is correct.
+- The dependency-free claim is **verified end to end**: the wheel installs into a venv with
+  nothing else and plays a 493-decision game with numpy, torch and PIL absent from
+  `sys.modules`. Pillow is the `web` extra because `interfaces/web/api.py` reaches `Geometry`
+  through `interfaces/render.py`, which imports PIL at module level.
+- `api.view(game, seat)` and `api.statistics(game, seat)` exist and are leak-tested on both
+  seats. `Game.awaiting(seat)` joins `awaiting_opponent`. The **`log` is still written from
+  seat 1's perspective** — public content, wrong pronoun — and a second human seat needs it
+  rendered per seat rather than stored once.
+
+### What Phase B has to decide on its first day
+
+- **Docker was not installed on the machine when Phase A was written**, so the compose stack
+  has never been started here. Nothing in Phase A depends on it.
+- **The champion is not in the wheel.** `packages` lists code, and `models/` is not a package.
+  The website should fetch `models/champion_az.pt` from the pinned tag and verify the sha256
+  above through `training.validate` — which is the content-addressed anchor rule from §B4
+  arriving early, rather than a workaround.
+- **`requires-python = ">=3.11"` is a claim about syntax, not a measurement.** Nothing in the
+  tree uses `match` or `X | Y` annotations; it has only ever been run on 3.14. Pin the
+  backend image deliberately.
+
+---
+
 ## What the audit changed
 
 The PDF is written from the README. This repository also contains
