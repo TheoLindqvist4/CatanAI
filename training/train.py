@@ -25,6 +25,7 @@ import torch
 from catan import action_space, encoder
 from catan.agents import HeuristicAgent
 from training.evaluate import evaluate, format_result
+from training.loading import load_training_state
 from training.net import PolicyValueNet, build
 from training.pool import OpponentPool
 from training.ppo import PPO
@@ -85,7 +86,7 @@ def train(args):
     start_iteration, history = 0, []
 
     if args.resume:
-        checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
+        checkpoint = load_training_state(args.resume)
         net = build(checkpoint["config"])
         net.load_state_dict(checkpoint["weights"])
         ppo = PPO(net, lr=args.lr, clip=args.clip, epochs=args.epochs,

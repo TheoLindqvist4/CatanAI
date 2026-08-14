@@ -43,6 +43,7 @@ import torch
 
 from catan import action_space, encoder
 from training.alphazero import layouts
+from training.loading import load_model
 from training.net import build
 from training.structured_net import StructuredPolicyValueNet
 
@@ -223,7 +224,7 @@ def load_for_alphazero(path, value_activation="tanh"):
         ``(net, notes)`` where ``notes`` is a dict describing what was done, for the record.
     """
     path = pathlib.Path(path)
-    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    checkpoint = load_model(path)
     config = dict(checkpoint["config"])
     weights, inserted = graft(checkpoint["weights"], config)
 

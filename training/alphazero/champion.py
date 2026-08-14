@@ -233,9 +233,9 @@ def load_previous_technique(temperature=0.0, seed=None):
     try:
         from training.agent import PolicyAgent
         from training.alphazero.network import load_for_alphazero
-        import torch
+        from training.loading import load_model
 
-        checkpoint = torch.load(PPO_CHAMPION, map_location="cpu", weights_only=False)
+        checkpoint = load_model(PPO_CHAMPION)
         if checkpoint["config"].get("obs_size") == encoder.SIZE:
             return PolicyAgent.load(PPO_CHAMPION, temperature=temperature, seed=seed)
         # Grafted, and kept as a *policy* agent: the value head was reset by the graft, and
@@ -412,8 +412,10 @@ def _install(candidate_path, results):
     """Replace the champion atomically, so a game in progress never sees half a file."""
     import torch
 
+    from training.loading import load_model
+
     MODELS.mkdir(parents=True, exist_ok=True)
-    source = torch.load(candidate_path, map_location="cpu", weights_only=False)
+    source = load_model(candidate_path)
 
     staging = CHAMPION.with_suffix(".incoming")
     torch.save({

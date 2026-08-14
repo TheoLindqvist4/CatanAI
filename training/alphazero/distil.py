@@ -39,6 +39,7 @@ from torch import nn
 from catan import action_space, encoder
 from catan.env import CatanEnv
 from catan.rulesets import RANKED_1V1
+from training.loading import load_model
 from training.net import build
 from training.structured_net import StructuredPolicyValueNet
 
@@ -50,7 +51,7 @@ def _configure(payload):
     import torch as _torch
     _torch.set_num_threads(1)
     settings = pickle.loads(payload)
-    checkpoint = _torch.load(settings["source"], map_location="cpu", weights_only=False)
+    checkpoint = load_model(settings["source"])
     net = build(checkpoint["config"])
     net.load_state_dict(checkpoint["weights"])
     net.eval()
@@ -234,7 +235,7 @@ def main(argv=None):
                                    seed=args.seed, temperature=args.temperature)
 
     torch.set_num_threads(args.threads)
-    checkpoint = torch.load(args.source, map_location="cpu", weights_only=False)
+    checkpoint = load_model(args.source)
     teacher = build(checkpoint["config"])
     teacher.load_state_dict(checkpoint["weights"])
     teacher.eval()

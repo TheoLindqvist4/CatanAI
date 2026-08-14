@@ -16,6 +16,7 @@ import torch
 
 from catan import action_space, encoder, rules
 from catan.actions import ActionType
+from training.loading import load_model, load_training_state
 from training.net import PolicyValueNet, build
 
 
@@ -39,7 +40,7 @@ class PolicyAgent:
 
     @classmethod
     def load(cls, path, temperature=0.0, seed=None, map_location="cpu"):
-        checkpoint = torch.load(path, map_location=map_location, weights_only=False)
+        checkpoint = load_model(path, map_location=map_location)
         net = build(checkpoint["config"])
         net.load_state_dict(checkpoint["weights"])
         agent = cls(net, temperature=temperature, seed=seed)
@@ -90,7 +91,7 @@ def export(checkpoint, path):
     interface loading fourteen networks to use one.
     """
     import pathlib
-    source = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    source = load_training_state(checkpoint)
     path = pathlib.Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({

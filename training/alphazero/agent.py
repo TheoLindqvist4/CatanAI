@@ -38,6 +38,7 @@ from catan import action_space
 from catan.state import Phase
 from training.alphazero.determinize import determinize
 from training.alphazero.mcts import Search
+from training.loading import load_model
 from training.net import build
 
 #: Simulations per move when nobody says. Chosen for latency in the web interface rather than
@@ -92,7 +93,7 @@ class MCTSAgent:
     def load(cls, path, simulations=DEFAULT_SIMULATIONS, temperature=0.0, seed=None,
              map_location="cpu", setup_simulations=DEFAULT_SETUP_SIMULATIONS,
              setup_root_min_visits=DEFAULT_SETUP_ROOT_MIN_VISITS):
-        checkpoint = torch.load(path, map_location=map_location, weights_only=False)
+        checkpoint = load_model(path, map_location=map_location)
         net = build(checkpoint["config"])
         net.load_state_dict(checkpoint["weights"])
         agent = cls(net, simulations=simulations, temperature=temperature, seed=seed,

@@ -189,6 +189,19 @@ two mistakes already, including one of its own.
 
 ## Traps
 
+⚠️ **`training/loading.py` is the only module allowed to call `torch.load`, and
+`tests/test_loading.py` fails on the tenth call site.** `torch.load` unpickles and unpickling
+runs code, so reading a checkpoint somebody sent you is running a program they sent you — and
+nine sites passed `weights_only=False`, one inside the arena's *pool initializer* (so it runs
+once per worker before a game is played) and one in `champion._install`, which re-read the
+candidate after it had been validated. `load_model` is the door for anything that plays;
+`load_training_state` is the door for your own run resuming. **`weights_only=True` loads both
+champions and a full training checkpoint unchanged** — verified, not assumed — so there is no
+migration here, and `weights_only=False` now appears nowhere outside one warned fallback.
+`weights_only=True` is only half of it: `build(dict(checkpoint["config"]))` allocates from
+numbers in the file, so `check_config` bounds them and **raises** — `champion.load`'s
+`except Exception: return None` would otherwise report a memory bomb as "no champion present".
+
 **`VERTEX_TILES` and `TILE_VERTICES` are both keyed by plain integers.** Swapping them
 type-checks, runs, and silently produces nonsense. It happened in `robber_damage`. Name the
 variable after the id it holds.
