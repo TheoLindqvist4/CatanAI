@@ -98,6 +98,75 @@ def test_no_response_ever_leaks_the_opponents_cards():
         view = game.play(rng.choice(board + panel))
 
 
+@pytest.mark.parametrize("seat", [1, 2])
+def test_no_response_leaks_the_other_seats_cards_whichever_seat_asks(seat):
+    """The same walk, from either side of the board.
+
+    ⚠️ ``view`` used to take no seat at all and reveal seat 1 unconditionally, so every
+    caller received the same payload no matter who was asking — correct for a local
+    single-player app and, the moment this is served over a network, a way to read a
+    stranger's cards by asking for their game. The filter is now parameterised, and the leak
+    test is parameterised with it: a rule that only holds for seat 1 is not a rule. See
+    ``docs/audit-2026-08-05-public-arena.md`` §B8.
+    """
+    game = fresh_game(seed=13)
+    rng = random.Random(13)
+    view = game.view(seat=seat)
+
+    for _ in range(1500):
+        assert view["you"] == seat
+        mine = next(p for p in view["players"] if p["id"] == seat)
+        theirs = next(p for p in view["players"] if p["id"] != seat)
+
+        assert mine["you"] is True and theirs["you"] is False
+        assert "hand" in mine, "you must always see your own cards"
+        if not view["done"]:
+            assert "hand" not in theirs, f"seat {seat} was shown the other hand"
+            assert "dev" not in theirs
+            assert "victoryPoints" not in theirs, "hidden victory points leaked"
+            assert "tradeRates" not in theirs
+        assert "handCount" in theirs and "devCount" in theirs
+
+        if view["done"]:
+            break
+        # Seat 1 is the one with a person behind it, so it is the one that can `play`; the
+        # point here is what seat 2 is *shown*, not that it can move.
+        if game.awaiting_opponent:
+            game.advance()
+        else:
+            board = [i for t in game.view()["actions"]["board"].values() for i in t.values()]
+            panel = [entry["index"] for entry in game.view()["actions"]["panel"]]
+            game.play(rng.choice(board + panel))
+        view = game.view(seat=seat)
+
+
+@pytest.mark.parametrize("seat", [1, 2])
+def test_the_statistics_panel_is_filtered_by_seat_too(seat):
+    """The other response a person can ask for, and the one that reports on the *history* of
+    the game rather than its position — so it is the one place where "is this public?" has to
+    be asked about a running total rather than about a card.
+
+    Each seat sees its own hidden victory-point sources and not the other's. Asking as seat 2
+    must not be a way to turn seat 1's cards over.
+    """
+    game = fresh_game()
+    game.state.dev_cards[1][DevCard.VICTORY_POINT] = 3
+    game.state.dev_cards[2][DevCard.VICTORY_POINT] = 2
+
+    panel = game.statistics(seat=seat)
+    mine = next(p for p in panel["players"] if p["id"] == seat)
+    theirs = next(p for p in panel["players"] if p["id"] != seat)
+
+    assert mine["you"] is True and theirs["you"] is False
+    assert any(row.get("hidden") for row in mine["pointSources"]), \
+        "you must see your own hidden victory point cards"
+    assert mine["victoryPointsComplete"] is True
+    assert not any(row.get("hidden") for row in theirs["pointSources"]), \
+        f"seat {seat} was shown the other seat's hidden victory points"
+    assert theirs["victoryPointsComplete"] is False, \
+        "the panel must say it does not know rather than imply a complete total"
+
+
 def test_only_the_public_score_is_shown_while_the_game_runs():
     game = fresh_game()
     game.state.dev_cards[2][DevCard.VICTORY_POINT] = 3

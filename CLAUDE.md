@@ -28,6 +28,18 @@ that could leak has a test that mutates the hidden state at constant public coun
 the observable output not move. `tests/helpers.py::scramble_hidden_state` is the shared
 scrambler; use it rather than writing a weaker one.
 
+⚠️ **There are *four* channels, not two, and for a long time only two were tested.** The
+observation and `PublicView` had leak tests; `info` and the web payload did not, and both were
+leaking. `info["scores"]` was `rules.scores(state)` sitting next to `public_scores`, so one
+subtraction gave an opponent's exact hidden VP count — readable by a well-behaved agent using
+only documented keys, which is why no allow-list caught it. It now reveals your own true score
+and everyone's once the game is over, and nothing else. And `api.view()` revealed seat 1
+unconditionally: fine for a local single-player app, a way to read a stranger's cards the
+moment it is served over a network. It takes a `seat` now, defaulting to `HUMAN`, and
+**`view` is the one serializer** — the browser, a socket frame and a replay are callers, not
+copies. Both have leak tests that fail against the old behaviour, which was checked rather
+than assumed.
+
 **Measure before claiming.** Several "obvious" improvements in this project measured as no
 better, and one measured as the opposite. Numbers or it did not happen.
 

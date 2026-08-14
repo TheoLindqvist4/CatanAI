@@ -296,16 +296,95 @@ def test_the_default_turn_cap_is_generous_enough_to_finish():
 # INFO                                                                        #
 # =========================================================================== #
 
-def test_info_reports_public_and_true_scores_separately():
+def test_info_reports_your_own_true_score_because_you_can_see_your_own_hand():
     env = CatanEnv()
     env.reset(seed=1)
     state = env.state
-    state.dev_cards[1][DevCard.VICTORY_POINT] = 2
+    me = state.current_player
+    state.dev_cards[me][DevCard.VICTORY_POINT] = 2
     _, info = env._observe()
 
-    assert info["scores"][1] == rules.victory_points(state, 1)
-    assert info["public_scores"][1] == rules.public_victory_points(state, 1)
-    assert info["scores"][1] - info["public_scores"][1] == 2
+    assert info["player"] == me
+    assert info["scores"][me] == rules.victory_points(state, me)
+    assert info["public_scores"][me] == rules.public_victory_points(state, me)
+    assert info["scores"][me] - info["public_scores"][me] == 2
+
+
+def test_info_does_not_report_an_opponents_hidden_victory_point_cards():
+    """⚠️ This test used to assert the opposite.
+
+    ``info["scores"]`` was ``rules.scores(state)`` unconditionally and sat next to
+    ``public_scores``, so one subtraction gave an opponent's exact hidden Victory Point count
+    — the fact that decides whether they are one build from 15. It is not a sandbox escape:
+    it is readable by a well-behaved agent using only documented, public keys, which is why
+    neither the observation's leak tests nor ``PublicView`` caught it. See
+    ``docs/audit-2026-08-05-public-arena.md`` §B3.
+    """
+    env = CatanEnv()
+    env.reset(seed=1)
+    state = env.state
+    me = state.current_player
+    opponent = next(p for p in state.players if p != me)
+    state.dev_cards[opponent][DevCard.VICTORY_POINT] = 2
+    _, info = env._observe()
+
+    assert info["scores"][opponent] == info["public_scores"][opponent]
+    assert info["scores"][opponent] != rules.victory_points(state, opponent)
+
+
+@pytest.mark.parametrize("seed", [3, 11, 29])
+def test_nothing_in_info_moves_when_the_hidden_state_is_scrambled(seed):
+    """The leak test the ``info`` dict never had.
+
+    ``tests/test_encoder.py`` scrambles for the observation and ``tests/test_view.py`` for
+    :class:`~catan.view.PublicView`, and between them they were taken to cover what an agent
+    can see. They do not: ``info`` is a third channel, handed to the agent at every decision,
+    and ``info["scores"]`` was leaking through it in plain sight for as long as it existed.
+
+    So: at *every* decision of three whole games, clone the position, rewrite everything the
+    mover may not see at constant public counts, and demand that every key an agent reads
+    comes back identical. ``view`` is excluded because it is an object rather than a value —
+    it has its own leak test, and its whole surface is checked there.
+    """
+    from helpers import scramble_hidden_state
+
+    READ_BY_AGENTS = ("player", "mask", "legal", "phase", "turn", "last_roll",
+                      "scores", "public_scores", "winner", "done")
+
+    env = CatanEnv()
+    observation, info = env.reset(seed=seed)
+    rng = random.Random(seed ^ 0xF00D)
+    decisions = 0
+
+    while not info["done"] and decisions < 2_000:
+        scrambled = env.clone()
+        scramble_hidden_state(scrambled.state, info["player"])
+        shadow_observation, shadow = scrambled._observe()
+
+        for key in READ_BY_AGENTS:
+            assert shadow[key] == info[key], (
+                f"info[{key!r}] moved when only hidden state changed, at decision "
+                f"{decisions} of seed {seed}")
+        assert shadow_observation == observation
+
+        observation, _, _, _, info = env.step(rng.choice(info["legal"]))
+        decisions += 1
+
+    assert decisions > 50, "the game ended too early to have tested anything"
+
+
+def test_every_score_is_revealed_once_the_game_is_over():
+    """The winner turns their cards over, so nothing is hidden any more — and the recorder
+    needs the true final margin. `interfaces.web.stats` keys its `reveal` on the same fact."""
+    env = CatanEnv()
+    env.reset(seed=1)
+    state = env.state
+    opponent = next(p for p in state.players if p != state.current_player)
+    state.dev_cards[opponent][DevCard.VICTORY_POINT] = 2
+
+    _, info = env._observe(done=True)
+    assert info["scores"][opponent] == rules.victory_points(state, opponent)
+    assert info["scores"][opponent] - info["public_scores"][opponent] == 2
 
 
 def test_info_carries_the_phase_turn_and_last_roll():

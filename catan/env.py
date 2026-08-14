@@ -152,6 +152,7 @@ class CatanEnv:
         state = self.state
         player = state.current_player
         mask = action_space.legal_mask(state)
+        finished = done or state.phase is Phase.GAME_OVER
         info = {
             "player": player,
             # What this player may see of the board, for agents that reason about
@@ -163,13 +164,13 @@ class CatanEnv:
             "phase": state.phase,
             "turn": state.turn_number,
             "last_roll": state.last_roll,
-            "scores": rules.scores(state),
+            "scores": _scores(state, player, finished),
             "public_scores": {
                 p: rules.public_victory_points(state, p) for p in state.players
             },
             "winner": state.winner,
             "events": list(state.events),
-            "done": done or state.phase is Phase.GAME_OVER,
+            "done": finished,
         }
         return encoder.encode(state, player), info
 
@@ -206,6 +207,35 @@ class CatanEnv:
         if self.state is None:
             return f"CatanEnv(players={self.num_players}, not started)"
         return f"CatanEnv({self.state!r})"
+
+
+def _scores(state, me, finished):
+    """``{player: victory points}``, filtered to what ``me`` is entitled to know.
+
+    A Victory Point card is held, never played, and stays hidden until its owner wins — so an
+    opponent's *true* score is hidden information, and the difference between it and their
+    public score is the exact number of VP cards they hold. That is the fact deciding whether
+    they are one build from winning.
+
+    ⚠️ This used to be ``rules.scores(state)`` unconditionally, sitting next to
+    ``public_scores``, so one subtraction gave it away. Not a sandbox escape and not something
+    the existing leak tests could catch: they point at the observation and at
+    :class:`~catan.view.PublicView`, and this is a leak in the *documented* interface,
+    readable by a well-behaved agent using only public keys. See
+    ``docs/audit-2026-08-05-public-arena.md`` §B3.
+
+    Two things are still revealed, both of them entitlements rather than concessions. You see
+    your **own** true score, because you can see your own hand. And once the game is
+    ``finished`` everyone's is revealed, because the winner's cards are turned over — which is
+    also what ``interfaces.web.stats`` already keys its ``reveal`` on, and what the recorder
+    needs to write down a final margin.
+    """
+    return {
+        player: (rules.victory_points(state, player)
+                 if finished or player == me
+                 else rules.public_victory_points(state, player))
+        for player in state.players
+    }
 
 
 def _check_index(action):

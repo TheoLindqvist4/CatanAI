@@ -368,7 +368,11 @@ class Game:
 
     @property
     def awaiting_opponent(self):
-        """Whether a decision is outstanding that the person watching is not going to make.
+        """Whether seat 1 is waiting. :meth:`awaiting` for any other seat."""
+        return self.awaiting(HUMAN)
+
+    def awaiting(self, seat=HUMAN):
+        """Whether a decision is outstanding that the person at ``seat`` is not going to make.
 
         ``info["player"]`` is the authority rather than the turn order: the game is not
         strictly alternating, and during a discard the decision belongs to whoever is over
@@ -380,7 +384,7 @@ class Game:
         """
         if self.info["done"]:
             return False
-        return self.watching or self.info["player"] != HUMAN
+        return self.watching or self.info["player"] != seat
 
     @property
     def watching(self):
@@ -472,11 +476,11 @@ class Game:
             self.recorder.save()
         return self.view()
 
-    def view(self):
-        return view(self)
+    def view(self, seat=HUMAN):
+        return view(self, seat)
 
-    def statistics(self):
-        return statistics(self)
+    def statistics(self, seat=HUMAN):
+        return statistics(self, seat)
 
 
 # --------------------------------------------------------------------------- #
@@ -562,20 +566,35 @@ def _road_geometry(plan, road):
 # The view a player is entitled to                                            #
 # --------------------------------------------------------------------------- #
 
-def view(game):
-    """Everything the human may see, as JSON-ready data.
+def view(game, seat=HUMAN):
+    """Everything the player at ``seat`` may see, as JSON-ready data.
 
-    A *watched* game is filtered exactly as a played one is: seat 1's cards are shown and
-    seat 2's are not. That is deliberately no more permissive than the played case — a
-    spectator sees what a seat-1 player would see and nothing else — so the leak tests
-    covering this function cover watching too, without a second rule to keep in step.
+    **One serializer, however many callers.** The browser, a WebSocket frame and a replay
+    scrubber are three consumers of one hidden-information filter, and three serialisations
+    of it would be three chances to disagree — in the one area this project has been most
+    careful about. See ``docs/audit-2026-08-05-public-arena.md`` §9.7.
+
+    ⚠️ ``seat`` used to be the constant :data:`HUMAN`, which is right for a local
+    single-player app and disqualifying for anything reachable over a network: every caller
+    got seat 1's hand, so ``GET /api/game/2`` would have read a stranger's cards. It defaults
+    to ``HUMAN`` so the local app is unchanged, and ``tests/test_web.py`` runs its leak tests
+    against **both** seats.
+
+    A *watched* game is filtered exactly as a played one is: ``seat``'s cards are shown and
+    the other side's are not. That is deliberately no more permissive than the played case —
+    a spectator sees what a player in that seat would see and nothing else — so the leak
+    tests covering this function cover watching too, without a second rule to keep in step.
+
+    The ``log`` is the one field still written from seat 1's point of view: ``game.names``
+    calls it "You". Not a leak — every line comes from a public event — but a second human
+    seat would need the log rendered per seat rather than stored once.
     """
     state, info = game.state, game.info
-    your_turn = not info["done"] and info["player"] == HUMAN and not game.watching
+    your_turn = not info["done"] and info["player"] == seat and not game.watching
 
     return {
         "gameId": game.id,
-        "you": HUMAN,
+        "you": seat,
         "opponent": game.opponent_name,
         "rules": game.rules_name,
         # Both seats are agents: the client should drive the game rather than wait for a
@@ -584,14 +603,14 @@ def view(game):
         "watchedBy": game.watcher_name,
         "paceMs": WATCH_PACE_MS if game.watching else None,
         "phase": state.phase.name,
-        "phaseHint": _hint(state, info, your_turn, game),
+        "phaseHint": _hint(state, info, your_turn, game, seat),
         "turn": info["turn"],
         "lastRoll": info["last_roll"],
         "yourTurn": your_turn,
         # Whether the client should ask for another move to be played. Decided here, from
         # the engine's `info`, rather than inferred in the browser from `yourTurn` and
         # `done` — the client renders and reports clicks; it works nothing out.
-        "awaitingOpponent": game.awaiting_opponent,
+        "awaitingOpponent": game.awaiting(seat),
         "currentPlayer": info["player"],
         "done": info["done"],
         "winner": info["winner"],
@@ -602,13 +621,13 @@ def view(game):
         "robber": state.robber_tile,
         "board": _board(state),
         "pieces": _pieces(state),
-        "players": [_player(state, info, p) for p in state.players],
+        "players": [_player(state, info, p, seat) for p in state.players],
         "actions": _actions(state, info, your_turn),
         "log": game.log[-40:],
     }
 
 
-def statistics(game):
+def statistics(game, seat=HUMAN):
     """The whole game in numbers, for the panel behind the Stats button.
 
     Its own endpoint rather than another block on :func:`view`, for two reasons. It is
@@ -638,12 +657,12 @@ def statistics(game):
         names=game.names,
         reveal=game.info["done"],
         # There is no "you" in a watched game, so nobody's hidden cards are shown early.
-        you=None if game.watching else HUMAN,
+        you=None if game.watching else seat,
     )
 
 
-def _hint(state, info, your_turn, game=None):
-    """One line telling the player what is being asked of them.
+def _hint(state, info, your_turn, game=None, seat=HUMAN):
+    """One line telling the player at ``seat`` what is being asked of them.
 
     ``game`` is optional so the many callers that only have a state and an ``info`` keep
     working; it is passed when the line should name the agents instead of addressing a
@@ -656,7 +675,7 @@ def _hint(state, info, your_turn, game=None):
         if watching:
             winner = game.watcher_name if info["winner"] == HUMAN else game.opponent_name
             return f"{winner} wins."
-        return "You win!" if info["winner"] == HUMAN else "The opponent wins."
+        return "You win!" if info["winner"] == seat else "The opponent wins."
     if watching:
         mover = game.watcher_name if info["player"] == HUMAN else game.opponent_name
         return f"{mover} is thinking…"
@@ -715,13 +734,14 @@ def _pieces(state):
     }
 
 
-def _player(state, info, player):
-    """One player's public standing, plus their own cards if it is the human.
+def _player(state, info, player, seat=HUMAN):
+    """One player's public standing, plus their own cards if they are the one asking.
 
     The filter is here and nowhere else. Anything added to this dict for an opponent is
-    visible in the browser.
+    visible to whoever is looking — which, since this payload also goes over a socket, may
+    be their opponent.
     """
-    mine = player == HUMAN
+    mine = player == seat
     entry = {
         "id": player,
         "you": mine,
