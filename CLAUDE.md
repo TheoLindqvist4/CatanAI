@@ -417,7 +417,7 @@ Recorded so it is not re-attempted.
 | | |
 |---|---|
 | Why something is the way it is | `docs/decisions/` — 30 records |
-| What is done and what is next | `ROADMAP.md` |
+| What is done and what is next | `docs/website-split-plan.md` |
 | Whether a change helped | `training/evaluate.py`, and use enough games |
 | How fast anything is | `python -m benchmark.benchmark`, and warm up first |
 | How a training run went | `python -m training.alphazero.report` |

@@ -348,8 +348,15 @@ that used to stand in for it now writes 0.0
 ([0029](docs/decisions/0029-retiring-pip-potential.md)). And belief sampling, which every
 search idea needed, is `training/alphazero/determinize.py`.
 
-See [`ROADMAP.md`](ROADMAP.md) for the phase history, [`CLAUDE.md`](CLAUDE.md) for working
-notes, and [`docs/`](docs/) for the decision records.
+See [`CLAUDE.md`](CLAUDE.md) for working notes and [`docs/`](docs/) for the decision records.
+
+**This repository is becoming half of a pair.** `catan/` and the inference half of `training/`
+are being packaged as `catania-runtime`, which a separate public platform
+([CatanAI-Website](https://github.com/TheoLindqvist4/CatanAI-Website)) consumes across a
+versioned contract — so the rules, the observation and the hidden-information filter keep
+living in exactly one place. Nothing here becomes less usable on its own: a clone with no
+dependencies still plays and still trains. See
+[`docs/website-split-plan.md`](docs/website-split-plan.md).
 
 ## Tests
 

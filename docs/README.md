@@ -4,9 +4,10 @@ Reference material for CatanIA. The goal of the project is a rules-correct Catan
 whose entire state is machine-readable, so an agent can be trained on it; the playable
 interface consumes that engine rather than being part of it.
 
-For *what happens next*, see [`../ROADMAP.md`](../ROADMAP.md) — phases 0–4 built the engine and
-its AI surface; phases 5–7 turn it into a game you play against the AI in a browser. This folder
-is for what has been established: how things work, and why they were decided that way.
+For *what happens next*, see [website-split-plan.md](website-split-plan.md) — packaging this
+repository as a runtime that a separate public platform consumes, without either of them
+gaining a second copy of the rules. This folder is otherwise for what has been established:
+how things work, and why they were decided that way.
 
 ## Contents
 
@@ -18,6 +19,7 @@ is for what has been established: how things work, and why they were decided tha
 | [images/board-example.png](images/board-example.png) | A game rendered by `interfaces/render.py`. |
 | [audit-2026-07-30.md](audit-2026-07-30.md) | Full audit of the codebase at commit `e0f91a3`: verified bugs, missing rules, AI-readiness blockers, and what Phase 0 measured. |
 | [audit-2026-08-05-public-arena.md](audit-2026-08-05-public-arena.md) | What it would take to let strangers submit agents, rank them, and play the best of them: the reuse inventory, the verified containment failures, why the seed defeats every submission format, measured throughput and cost, and the decisions to take before writing code. |
+| [website-split-plan.md](website-split-plan.md) | The plan for the two-repository split: what `catania-runtime` contains, the five phases that turn this repository into a consumable one, and what CatanIA-Web is allowed to hold. Reconciles the go-live PDF against the audit above, which contradicts it in nine places. |
 
 Everything that prints lives in `interfaces/`: `render.py` draws a PNG, `cli.py` plays or
 watches a game in the terminal. Both lay the board out from the same `topology` lattice, so
