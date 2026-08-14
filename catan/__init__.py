@@ -14,6 +14,14 @@ Layers, innermost first:
 Nothing in this package performs I/O or touches the global ``random`` module.
 """
 
+#: The engine's version — the rules, the geometry and the state model together.
+#:
+#: It is what :mod:`catan.contract` publishes as ``engine_version``, and therefore what every
+#: recorded win rate, rating and match result names as the world it was measured in. Bump it
+#: when the game changes; ``catan.contract.rules_digest`` and ``tests/test_contract.py`` are
+#: what make forgetting to fail a test rather than quietly invalidate a published number.
+__version__ = "0.1.0"
+
 from catan.actions import Action, ActionType
 from catan.board import Board, Production
 from catan.resources import (

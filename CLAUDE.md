@@ -35,6 +35,18 @@ better, and one measured as the opposite. Numbers or it did not happen.
 tell 45% from 55%. `training/evaluate.py` has a Wilson interval; use it. Several results have
 flipped meaning between 200 and 800 games.
 
+**A number belongs to a version of the game, and `catan/contract.py` is where it says so.**
+`contract.signature()` — `CATANIA-1/engine-0.1.0/obs-1:2503/act-1:325/catan-1v1-v1` — is what
+goes beside a win rate, a rating or a match result, and two figures may be compared exactly
+when it matches. Every field is *derived* from the module that owns it, so the contract cannot
+disagree with the engine. ⚠️ The one hand-written field is `RULES_VERSION`, and
+`contract.rules_digest()` is what stops it being forgotten: it hashes what the rules offered at
+every decision of four seeded games, and `tests/test_contract.py` pins the result. **When that
+test fails, updating the expected string on its own converts "the rules changed by accident"
+into "the rules changed on purpose", silently.** Bump `RULES_VERSION` in the same commit or
+find out why legality moved. This exists because it has already bitten twice — a recorded 71.6%
+that re-measures at 49.3%, and two games in `games/` that stopped replaying at an unknown point.
+
 ⚠️ **Picking the best of N candidates on one sample and then quoting that sample is
 winner's curse, and it has bitten here twice.** A checkpoint chosen as the best of six at 200
 games measured 83.9% and then 80.1% on a fresh 400 — the entire apparent gain over the
