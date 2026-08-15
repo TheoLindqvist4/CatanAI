@@ -14,10 +14,39 @@ observation, not the public-information filter, and not the board-to-pixels layo
 
 ---
 
-## Where this stands — 14 August 2026
+## Where this stands — 15 August 2026
 
 **Phase A is complete and tagged `runtime-v0.1.0`** (commit `9d3008d`, branch
-`website-split`, pushed to origin). Phase B has not started.
+`website-split`, pushed to origin).
+
+**Phase B is under way** in `CatanAI-Website` on branch `platform`, pushed. B1, B2 and B4 are
+done; **B5, the online game loop, is next**, and B3 (frontend) follows it.
+
+| | | |
+|---|---|---|
+| B1 | skeleton, compose stack, CI, the boundary | `0237bd5` |
+| B2 | PostgreSQL, migrations, accounts | `0780281` |
+| B4 | the AI registry, geometry and board art | `1a3036c` |
+
+123 backend tests in 7.5 s. The stack rebuilds from an empty volume: migrations apply, five
+built-in opponents seed themselves, `/api/runtime` reports
+`CATANIA-1/engine-0.1.0/obs-1:2503/act-1:325/catan-1v1-v1` from the **installed** package.
+
+What the website has established that this repository should know:
+
+- **`app/runtime.py` is the only module allowed to import `catan`, `training` or
+  `interfaces`**, enforced by a test that walks every other file's syntax tree — plus a second
+  test hunting for rules *retyped* rather than imported.
+- The API image is **270 MB with neither torch nor numpy in it**, and plays the heuristic
+  perfectly well. `catania-runtime[web]` is enough for a real game; the trained champions are
+  what need the worker.
+- **`models/*.pt` does not travel with the wheel**, so the registry records the champion and
+  reports that this deployment cannot run it. Fetch-and-verify-by-checksum lands with the
+  worker.
+- ⚠️ **`localhost` costs 2 seconds per connection on Windows** — IPv6 first, containers on
+  IPv4 only. Measured 2.083 s against 0.015 s. It was 172 seconds of a 176-second test suite.
+- ⚠️ **FastAPI's `@router.get` does not add HEAD**, so cacheable endpoints answered 405 to a
+  CDN, a load-balancer probe and `curl -I`.
 
 | | | |
 |---|---|---|
